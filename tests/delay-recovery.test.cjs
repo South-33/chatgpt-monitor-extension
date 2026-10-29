@@ -11,6 +11,7 @@ async function scenario(stopSucceeds) {
   const sandbox = {
     extendedThinkingRecoveryRequested: false, extendedThinkingRetryAt: 0, extendedThinkingStopFailures: 0,
     location: { href: 'https://chatgpt.com/c/current' }, Date,
+    sameConversation: url => url === 'https://chatgpt.com/c/current',
     console: { info() {} }, setTimeout: callback => callback(),
     extendedThinkingTimedOut: () => true,
     findStopButton: () => generating ? {} : null,

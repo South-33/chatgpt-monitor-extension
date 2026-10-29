@@ -418,6 +418,19 @@ function isConversationPage() {
   }
 }
 
+function sameConversation(url) {
+  try {
+    const expected = new URL(url);
+    const current = new URL(location.href);
+    // Message-ID and other display query parameters do not change the chat.
+    // A different conversation path or temporary-chat mode does.
+    return expected.origin === current.origin
+      && expected.pathname.replace(/\/+$/, '') === current.pathname.replace(/\/+$/, '')
+      && ((expected.searchParams.get('temporary-chat') === 'true')
+        === (current.searchParams.get('temporary-chat') === 'true'));
+  } catch { return false; }
+}
+
 function visible(element) {
   if (!element) return false;
   const style = getComputedStyle(element);
@@ -594,6 +607,7 @@ function followLatestConversation() {
 
 async function recoverExtendedThinking() {
   if (!extendedThinkingTimedOut()) return false;
+  const expectedUrl = location.href;
   extendedThinkingRecoveryRequested = true;
   const stopButton = findStopButton();
   if (!stopButton) {
@@ -613,9 +627,10 @@ async function recoverExtendedThinking() {
   }
   reportDiagnostic("watchdog-stop-confirmed", "stop-control-disappeared");
   await new Promise((resolve) => setTimeout(resolve, 500));
+  if (!sameConversation(expectedUrl)) return true;
   if (terminalMarker(captureResponse().text)) return false;
   const action = await sendRuntime({ type: "extendedThinkingRecoveryReady", url: location.href });
-  if (action?.action) await handleAction(action);
+  if (action?.action && sameConversation(expectedUrl)) await handleAction(action);
   return true;
 }
 
@@ -1048,7 +1063,7 @@ function sendButtonReady(button) {
   return Boolean(button && visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true");
 }
 
-async function submitComposer(composer) {
+async function submitComposer(composer, expectedUrl = location.href) {
   const requested = comparableText(composerText(composer));
   const submitted = () => isGenerating() || (
     !composerText(findComposer()) && latestUserMatchesPrompt(requested)
@@ -1056,9 +1071,11 @@ async function submitComposer(composer) {
 
   // ChatGPT creates the Send button only after text enters an empty composer.
   await waitFor(() => sendButtonReady(findSendButton(composer)), 8000);
+  if (!sameConversation(expectedUrl) || findComposer() !== composer) return false;
   const button = findSendButton(composer);
   const ownership = await sendRuntime({ type: "isTargetTab" });
-  if (stopped || !ownership?.target || ownership.paused || isGenerating() || hasBlockingUi()) return false;
+  if (stopped || !ownership?.target || ownership.paused || isGenerating() || hasBlockingUi()
+      || !sameConversation(expectedUrl) || findComposer() !== composer) return false;
   if (sendButtonReady(button)) {
     HTMLButtonElement.prototype.click.call(button);
     if (await waitFor(submitted, 10000)) return true;
@@ -1215,20 +1232,23 @@ async function ensureModelPreferences(preferences, force = false) {
 }
 
 async function sendPrompt(text) {
+  const expectedUrl = location.href;
   const ownership = await sendRuntime({ type: "isTargetTab" });
-  if (stopped || !ownership?.target || ownership.paused) return false;
+  if (stopped || !ownership?.target || ownership.paused || !sameConversation(expectedUrl)) return false;
   const requested = normalizedText(text);
   if (!requested || isGenerating() || hasBlockingUi()) return false;
   if (!await waitFor(() => visible(findComposer()), 10000)) return false;
-  if (hasBlockingUi()) return false;
+  if (hasBlockingUi() || !sameConversation(expectedUrl)) return false;
   if (!await ensureModelPreferences(ownership, true)) return false;
+
+  if (!sameConversation(expectedUrl)) return false;
 
   const composer = findComposer();
   const existing = composerText(composer);
   if (existing && comparableText(existing) !== comparableText(requested)) return false;
   if (!existing && !await setComposerText(composer, text)) return false;
   if (comparableText(composerText(composer)) !== comparableText(requested)) return false;
-  return submitComposer(composer);
+  return submitComposer(composer, expectedUrl);
 }
 
 async function sendPromptWithRetry(text) {
@@ -1236,18 +1256,20 @@ async function sendPromptWithRetry(text) {
   return sendPrompt(text);
 }
 
-async function manualSwap(prompt) {
-  if (manualActionRunning || !prompt || hasBlockingUi()) return false;
+async function manualSwap(prompt, expectedUrl = location.href) {
+  if (manualActionRunning || !prompt || hasBlockingUi() || !sameConversation(expectedUrl)) return false;
   manualActionRunning = true;
   let ok = false;
   try {
     if (!await waitFor(() => !scanRunning, 10000)) return false;
+    if (!sameConversation(expectedUrl)) return false;
     const stopButton = findStopButton();
     if (stopButton) {
       HTMLButtonElement.prototype.click.call(stopButton);
       if (!await waitFor(() => !isGenerating(), 15000)) return false;
       await new Promise((resolve) => setTimeout(resolve, 600));
     }
+    if (!sameConversation(expectedUrl)) return false;
     ok = await sendPromptWithRetry(prompt);
     return ok;
   } finally {
@@ -1261,12 +1283,14 @@ async function manualSwap(prompt) {
   }
 }
 
-async function manualContinue(prompt) {
-  if (manualActionRunning || !prompt || isGenerating() || hasBlockingUi()) return false;
+async function manualContinue(prompt, expectedUrl = location.href) {
+  if (manualActionRunning || !prompt || isGenerating() || hasBlockingUi()
+      || !sameConversation(expectedUrl)) return false;
   manualActionRunning = true;
   let ok = false;
   try {
     if (!await waitFor(() => !scanRunning, 10000)) return false;
+    if (!sameConversation(expectedUrl)) return false;
     ok = await sendPromptWithRetry(prompt);
     return ok;
   } finally {
@@ -1365,7 +1389,9 @@ async function handleAction(result) {
 
 async function deliverPendingHandoff() {
   if (hasBlockingUi()) return;
+  const expectedUrl = location.href;
   const result = await sendRuntime({ type: "getPendingHandoff" });
+  if (!sameConversation(expectedUrl)) return;
   if (!result?.prompt) return;
   if (isConversationPage()) {
     // Navigation may complete before the delivery acknowledgement reaches the
@@ -1379,6 +1405,7 @@ async function deliverPendingHandoff() {
     await sendRuntime({ type: "commandResult", action: "enableDevSpace", ok: false, url: location.href });
     return;
   }
+  if (!sameConversation(expectedUrl)) return;
 
   const ok = await sendPromptWithRetry(result.prompt);
   if (ok) {
@@ -1426,6 +1453,7 @@ async function recoverConversationLoad() {
 
 async function scan() {
   if (stopped || scanRunning || manualActionRunning || blockingUiRunning) return;
+  const scannedUrl = location.href;
   scanRunning = true;
   try {
     const tabRole = await sendRuntime({ type: "isTargetTab" });
@@ -1466,6 +1494,7 @@ async function scan() {
     if (generationEnded && await settleBlockingUiAfterGeneration()) return;
     if (!generating && tabRole.scanHistory) {
       const historySeconds = await scanExistingHistory();
+      if (!sameConversation(scannedUrl)) return;
       if (historySeconds !== null) {
         await sendRuntime({
           type: "historyScanComplete",
@@ -1528,6 +1557,10 @@ async function scan() {
     // before reconciling model choices. Active generation is never interrupted.
     if (!generating && !terminalMarker(latestResponseText) && !await ensureModelPreferences(tabRole)) return;
 
+    // DOM reads and model-menu waits can span a navigation. A completed reply
+    // from the old chat must never become an action in the new conversation.
+    if (!sameConversation(scannedUrl)) return;
+
     const result = await sendRuntime({
       type: "status",
       url: location.href,
@@ -1544,7 +1577,8 @@ async function scan() {
       consecutiveBlockedResponses: generating ? 0 : consecutiveBlockedResponses(),
     });
     if (await resolveDevSpaceMaterialization()) return;
-    if (result?.action && !manualActionRunning && !hasBlockingUi()) await handleAction(result);
+    if (result?.action && !manualActionRunning && !hasBlockingUi()
+        && sameConversation(scannedUrl)) await handleAction(result);
   } catch (error) {
     if (/extension context invalidated/i.test(error?.message || "")) {
       stopMonitor();
@@ -1596,7 +1630,7 @@ function handleVisibilityChange() {
 function handleRuntimeMessage(message, _sender, sendResponse) {
   if (message.type !== "manualSwap" && message.type !== "manualContinue") return false;
   const operation = message.type === "manualSwap" ? manualSwap : manualContinue;
-  operation(message.prompt)
+  operation(message.prompt, message.expectedUrl)
     .then((ok) => sendResponse({ ok }))
     .catch(() => sendResponse({ ok: false }));
   return true;

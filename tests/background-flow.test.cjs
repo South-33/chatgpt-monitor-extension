@@ -358,6 +358,10 @@ function send(message, sender = {}) {
   }, timeoutTab);
   assert.equal(timeoutAction.action, "sendContinue");
   assert.equal(local.runtime.states[26].activeStartedAt, null);
+  await send({ type: "commandResult", action: "sendContinue", ok: true,
+    url: timeoutTab.tab.url }, timeoutTab);
+  // The next interruption is independent only after the previous send was
+  // acknowledged. An unacknowledged request must never start a second one.
   const duplicateTimeout = await send({
     type: "status", url: timeoutTab.tab.url, isGenerating: false,
     recoveryKey: "failed-turn-1", responseKey: "", latestResponseText: "",

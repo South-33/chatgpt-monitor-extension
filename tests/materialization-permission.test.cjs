@@ -130,7 +130,7 @@ assert.ok(scanStart >= 0 && scanEnd > scanStart, "scan function not found");
 const scanSource = source.slice(scanStart, scanEnd);
 assert.ok((scanSource.match(/resolveDevSpaceMaterialization\(\)/g) || []).length >= 3,
   "blocking permission UI must be checked before scan work, before status, and before actions");
-assert.match(scanSource, /if \(result\?\.action && !manualActionRunning && !hasBlockingUi\(\)\) await handleAction\(result\);/,
+assert.match(scanSource, /if \(result\?\.action && !manualActionRunning && !hasBlockingUi\(\)\s*&& sameConversation\(scannedUrl\)\) await handleAction\(result\);/,
   "continuation actions must never run while blocking UI is active");
 
 const assistStart = source.indexOf("function conversationPermissionOption");

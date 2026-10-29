@@ -42,6 +42,7 @@ async function scenario({ error, baseline = 0 }) {
     domRevision: 0, lastProcessedRevision: -1,
     document: { querySelectorAll() { return []; }, querySelector() { return main; } },
     location: { href: sender.tab.url }, Date: clock, console,
+    sameConversation: url => url === sender.tab.url,
     sendRuntime: send,
     isConversationPage: () => true,
     isGenerating: () => generating,

@@ -110,6 +110,8 @@ const DIAGNOSTIC_EVENTS = new Set([
 ]);
 const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "handoff", "none"]);
 let diagnosticWrites = Promise.resolve();
+let settingsWrites = Promise.resolve();
+let runtimeWrites = Promise.resolve();
 let logFileError = "";
 let settings = { ...DEFAULT_SETTINGS };
 const ready = initialize();
@@ -277,16 +279,20 @@ async function initialize() {
 }
 
 async function persistSettings() {
-  await chrome.storage.local.set({ settings });
+  // Chrome storage writes are asynchronous. Keep their order stable when the
+  // popup, monitor, and recovery alarm update state at the same time.
+  settingsWrites = settingsWrites.catch(() => {}).then(() => chrome.storage.local.set({ settings }));
+  return settingsWrites;
 }
 
 async function persistRuntime() {
-  await chrome.storage.local.set({
+  runtimeWrites = runtimeWrites.catch(() => {}).then(() => chrome.storage.local.set({
     runtime: {
       states: Object.fromEntries(states),
       pendingHandoffs: Object.fromEntries(pendingHandoffs),
     },
-  });
+  }));
+  return runtimeWrites;
 }
 
 function syncKeepAwake() {
@@ -623,6 +629,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     await ready;
 
+    // A long-running content-script operation can finish after its tab moves
+    // to another chat. Never apply its old URL report to the new conversation.
+    if (message.url && sender.tab?.url
+        && conversationKey(message.url) !== conversationKey(sender.tab.url)) {
+      sendResponse({ ok: false });
+      return;
+    }
+
     if (message.type === "getSettings") {
       const profile = continueProfile(message.tabId);
       sendResponse({ settings: { ...settings, continuePresets: profile.presets,
@@ -908,6 +922,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const result = await chrome.tabs.sendMessage(tabId, {
             type: "manualSwap",
             prompt: manualHandoffPrompt,
+            expectedUrl: state.url,
           });
           sendResponse(result?.ok === true
             ? { ok: true }
@@ -963,10 +978,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const result = await chrome.tabs.sendMessage(tabId, {
           type: "manualContinue",
           prompt: manualContinuePrompt,
+          expectedUrl: state.url,
         });
-        sendResponse(result?.ok === false
-          ? { ok: false, error: "Could not submit the continuation." }
-          : { ok: true });
+        sendResponse(result?.ok === true
+          ? { ok: true }
+          : { ok: false, error: "Could not confirm the continuation was submitted." });
       } catch {
         state.phase = "watching";
         state.issue = "Could not reach the monitored page. Refresh ChatGPT and retry.";
@@ -1180,6 +1196,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "commandResult") {
       if (targetMatches(tabId)) {
+        // Ignore completion from a prior conversation after this tab moved.
+        // Do not let a stale acknowledgement reset the new conversation state.
+        const current = states.get(tabId);
+        if (current && !pendingHandoffs.has(tabId) && message.url
+            && conversationKey(message.url) !== current.conversationKey) {
+          sendResponse({ ok: false });
+          return;
+        }
         const state = getState(tabId, message.url || sender.tab?.url || "");
         await recordDiagnostic("action-result", {
           tabId,
@@ -1289,12 +1313,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.recoveryCheckPrompt = "";
         state.issue = "";
         changed = true;
-      } else if (state.phase === "sending-handoff") {
-        markTransientActionAccepted(state);
-        changed = true;
-      } else if (state.phase === "sending-continue") {
-        markTransientActionAccepted(state);
-        changed = true;
+      } else if (["sending-handoff", "sending-continue"].includes(state.phase)) {
+        // Generation may belong to the previous user message (manual handoff
+        // can stop it). It is not proof that our prompt was submitted.
       } else if (
         thresholdReached(state)
         && state.phase !== "waiting-for-handoff"
@@ -1327,6 +1348,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const result = requestContinue(state, undefined, "manual-continue");
       await persistRuntime();
       sendResponse(result);
+      return;
+    }
+
+    if (["sending-continue", "sending-handoff"].includes(state.phase)
+        && !state.retryAt) {
+      // An old response may remain visible until the submitted prompt starts
+      // its own turn. Do not act on it before a real send acknowledgement.
+      if (transientActionTimedOut(state)) {
+        if (sameSubmittedPrompt(message.latestUserText, state.actionPrompt)
+            && message.composerEmpty !== false) {
+          markTransientActionAccepted(state);
+          await persistRuntime();
+          sendResponse({});
+          return;
+        }
+        if (!state.issue) {
+          const retry = retryTransientAction(state);
+          await persistRuntime();
+          sendResponse(retry);
+          return;
+        }
+      }
+      sendResponse({});
       return;
     }
 

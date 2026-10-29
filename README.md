@@ -24,6 +24,8 @@ A Manifest V3 extension for independently continuing and handing off ChatGPT tas
 - Handoff uses cumulative tracked work time. It requests a concise checkpoint, permits brief preparation, and validates a minimum of 200 characters and 30 words. A short response gets one retry. The fresh chat selects Devspace when needed and receives the saved checkpoint. Context remains saved until delivery is acknowledged.
 - Manual Handoff is available without monitoring and leaves the fresh chat unmonitored. Terminal paused tasks must be resumed before handing off.
 - Loading failures retry with increasing delays, capped at five minutes. Prompt failures get two delayed retries before requiring Retry. Submission acknowledgement prevents duplicate sends.
+- Unacknowledged prompts cannot consume a prior assistant reply. Late sends and status updates from a different conversation are ignored; switching chats during an in-flight action cancels its submission instead of moving the prompt to another task.
+- Runtime and settings writes are serialized so concurrent tab events, popup edits, and recovery checks do not save state in the wrong order.
 - DOM changes are debounced, periodic scans reconcile missed updates, and monitored conversations scroll down at most every 30 seconds. A moved pane gets time to render before decisions. Pause disables these actions.
 - Runtime state survives service-worker restarts. Worked-time labels supplement tracked generation time; unrendered past work cannot be reconstructed. Monitoring requests system keep-awake, allowing the display to turn off.
 
