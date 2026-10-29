@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'content.js'), 'utf8');
+const initialState = source.slice(source.indexOf('let stopped = false;'), source.indexOf('function normalizedControlText(value)'));
 const flow = source.slice(source.indexOf('function modelPickerTrigger()'), source.indexOf('async function sendPrompt(text)'));
 
 function fixture(menuDelayQueries = 0) {
@@ -45,7 +46,6 @@ function fixture(menuDelayQueries = 0) {
   };
   menu.dispatchEvent = event => { if (event.key === 'Escape') open = false; };
   const ctx = {
-    stopped: false, verifiedModelSelection: null, modelPreferenceFailure: '', modelPreferenceRetryAt: 0,
     location: { href: 'https://chatgpt.com/c/task' },
     document: {
       getElementById: id => id === 'menu' && open ? menu : null,
@@ -77,7 +77,9 @@ function fixture(menuDelayQueries = 0) {
       }
     },
   };
-  vm.runInNewContext(flow, ctx);
+  // Evaluate the real top-level state. Supplying test-only model globals used
+  // to hide a production ReferenceError even while this entire suite passed.
+  vm.runInNewContext(`${initialState}\n${flow}`, ctx);
   return { ctx, preferences, clicks, reports, trigger, menu, models,
     setGenerating: value => { generating = value; }, setBlocked: value => { blocked = value; },
     setPaused: value => { paused = value; }, advance: () => { clock += 30001; },

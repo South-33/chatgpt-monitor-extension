@@ -28,6 +28,13 @@ let cachedWorkedSeconds = 0;
 let workedScanUrl = location.href;
 let settledResponseKey = "";
 let settledResponseUrl = location.href;
+// Keep model verification and retry state within this content-script instance.
+// These values must exist before the first scan; an undeclared optional-chain
+// target throws a ReferenceError and prevents monitoring from advancing.
+let verifiedModelSelection = null;
+let modelPreferenceFailure = "";
+let modelPreferenceRetryAt = 0;
+const approvalDiagnostics = new WeakMap();
 
 function normalizedControlText(value) {
   return (value || "").replace(/\s+/g, " ").trim();
@@ -45,7 +52,7 @@ function reportDiagnostic(event, reason, elapsedMs) {
 function isDevSpaceMaterializationText(value) {
   const text = normalizedControlText(value);
   return /allow file materialization\?/i.test(text)
-    && /devspace/i.test(text)
+    && /(?:dev\s*space|spacedev)/i.test(text)
     && /materialize\s+\d+\s+file attachments?/i.test(text);
 }
 
@@ -75,17 +82,18 @@ function hasDevSpaceApprovalControls(element) {
 const hasToolApprovalControls = hasDevSpaceApprovalControls;
 
 function devSpaceMaterializationDialog() {
-  // Prefer the approval surface itself, independent of its heading, nesting,
-  // attachment type, or dropdown label. Still require the provider and actions.
+  // Only file-materialization prompts are safe for this narrow approval flow.
+  // Generic tool approval can authorize commands that change local files.
   const surface = [...document.querySelectorAll("[data-codex-approval-surface]")]
     .filter(visible)
-    .filter((card) => /\b(?:dev\s*space|spacedev)\b/i.test(card.innerText || card.textContent || ""))
+    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
     .filter(hasDevSpaceApprovalControls)
     .at(-1);
   if (surface) return surface;
 
   const toolCard = [...document.querySelectorAll('[data-testid="tool-approval-card"]')]
     .filter(visible)
+    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
     .filter(hasDevSpaceApprovalControls)
     .at(-1);
   if (toolCard) return toolCard;
@@ -94,6 +102,7 @@ function devSpaceMaterializationDialog() {
     "[role='dialog'], [aria-modal='true'], [data-radix-dialog-content], [data-state='open']",
   )]
     .filter(visible)
+    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
     .filter(hasDevSpaceApprovalControls)
     .at(-1);
   if (explicitDialog) return explicitDialog;
@@ -232,8 +241,23 @@ function controlReady(element) {
   return element.getAttribute("aria-disabled") !== "true";
 }
 
+function pendingToolApproval() {
+  // Detect generic tool permission cards even when button text is in ARIA.
+  // Never let a relay send a new message while an approval is unanswered.
+  return [...document.querySelectorAll(
+    '[data-codex-approval-surface], [data-testid="tool-approval-card"]',
+  )].some(card => {
+    if (!visible(card)) return false;
+    const labels = [...card.querySelectorAll('button')]
+      .filter(visible)
+      .map(button => button.getAttribute('aria-label') || button.innerText || button.textContent || '');
+    return labels.some(label => /^(?:deny|reject)\b/i.test(normalizedControlText(label)))
+      && labels.some(label => /^(?:allow|approve)\b/i.test(normalizedControlText(label)));
+  });
+}
+
 function hasBlockingUi() {
-  return Boolean(devSpaceMaterializationDialog()) || blockingUiRunning;
+  return pendingToolApproval() || Boolean(devSpaceMaterializationDialog()) || blockingUiRunning;
 }
 
 function reportApproval(dialog, event, reason) {

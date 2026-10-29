@@ -23,6 +23,9 @@ assert.equal(sandbox.matchesDialog(
 ), true);
 assert.equal(sandbox.matchesDialog("Allow file materialization? Returned by another app."), false);
 assert.equal(sandbox.matchesDialog("Allow Devspace to run this command?"), false);
+assert.equal(sandbox.matchesDialog(
+  "Allow file materialization? ChatGPT needs your approval to materialize 1 file attachments returned by spacedev.",
+), true);
 
 assert.equal(sandbox.matchesScope("Allow Devspace for this conversation"), true);
 assert.equal(sandbox.matchesScope("Allow for this conversation"), true);
@@ -56,6 +59,31 @@ assert.ok(dialogStart >= 0 && dialogEnd > dialogStart, "materialization card fin
   vm.runInNewContext(`${source.slice(dialogStart, dialogEnd)}; findCard = devSpaceMaterializationDialog;`, exactCardSandbox);
   assert.equal(exactCardSandbox.findCard(), exactCard,
     "ChatGPT tool-approval-card must be the primary materialization anchor");
+  exactCard.innerText = 'Allow Devspace to execute a command? Deny Allow';
+  assert.equal(exactCardSandbox.findCard(), null,
+    'never treat generic command permission as safe file materialization');
+}
+
+{
+  const start = source.indexOf('function pendingToolApproval()');
+  const end = source.indexOf('function reportApproval(', start);
+  assert.ok(start >= 0 && end > start, 'generic approval guard not found');
+  const card = {
+    querySelectorAll: () => [
+      { getAttribute: () => 'Deny' },
+      { getAttribute: () => 'Allow' },
+    ],
+  };
+  const context = {
+    document: { querySelectorAll: () => [card] },
+    visible: () => true,
+    normalizedControlText: sandbox.normalizedControlText,
+    devSpaceMaterializationDialog: () => null,
+    blockingUiRunning: false,
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  assert.equal(context.hasBlockingUi(), true,
+    'unanswered generic tool approvals must block sending');
 }
 
 {
