@@ -84,6 +84,13 @@ function send(message, sender = {}) {
   assert.equal(ownership.thinkingMinutes, 2);
   assert.equal(ownership.preferredModel, 'GPT-5.6 Sol');
   assert.equal(ownership.preferredReasoning, 'high');
+  assert.equal(ownership.enforceModelPreferences, true, 'existing settings keep their previous behavior');
+  await send({ type: 'saveSettings', settings: { enforceModelPreferences: false } });
+  assert.equal((await send({ type: 'isTargetTab' }, tab)).enforceModelPreferences, false,
+    'checkbox off is persisted and returned to the monitor');
+  assert.equal((await send({ type: 'getSettings' })).settings.preferredModel, 'GPT-5.6 Sol',
+    'disabling automation must retain the chosen model for future use');
+  await send({ type: 'saveSettings', settings: { enforceModelPreferences: true } });
   await send({ type: 'saveSettings', settings: { preferredModel: ' GPT-6 ', preferredReasoning: 'medium' } });
   const modelSettings = (await send({ type: 'getSettings' })).settings;
   assert.equal(modelSettings.preferredModel, 'GPT-6');

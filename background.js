@@ -3,6 +3,7 @@ if (typeof importScripts === "function") importScripts("log-files.js");
 const DEFAULT_SETTINGS = {
   preferredModel: "GPT-5.6 Sol",
   preferredReasoning: "high",
+  enforceModelPreferences: true,
   enabled: false,
   targetTabIds: [],
   thresholdMinutes: 130,
@@ -661,8 +662,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "saveSettings") {
       const previousModel = settings.preferredModel;
       const previousReasoning = settings.preferredReasoning;
+      const previousEnforcement = settings.enforceModelPreferences;
       settings = {
         ...settings,
+        enforceModelPreferences: typeof message.settings?.enforceModelPreferences === "boolean"
+          ? message.settings.enforceModelPreferences : settings.enforceModelPreferences,
         preferredModel: typeof message.settings?.preferredModel === "string"
           ? message.settings.preferredModel.trim().slice(0, 80) : settings.preferredModel,
         preferredReasoning: ["", "instant", "medium", "high"].includes(message.settings?.preferredReasoning)
@@ -670,7 +674,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         thresholdMinutes: Math.min(720, Math.max(1, Number(message.settings?.thresholdMinutes) || settings.thresholdMinutes || 130)),
         thinkingMinutes: Math.min(60, Math.max(1, Number(message.settings?.thinkingMinutes) || settings.thinkingMinutes || 10)),
       };
-      if (previousModel !== settings.preferredModel || previousReasoning !== settings.preferredReasoning) {
+      if (previousModel !== settings.preferredModel || previousReasoning !== settings.preferredReasoning
+          || previousEnforcement !== settings.enforceModelPreferences) {
         for (const state of states.values()) {
           if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
           state.modelPreferenceIssue = "";
@@ -1055,6 +1060,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ target: targetMatches(tabId), paused: Boolean(state?.paused),
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
         thinkingMinutes: settings.thinkingMinutes,
+        enforceModelPreferences: settings.enforceModelPreferences !== false,
         preferredModel: settings.preferredModel, preferredReasoning: settings.preferredReasoning });
       return;
     }

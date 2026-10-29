@@ -5,8 +5,8 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'conte
 const initialState = source.slice(source.indexOf('let stopped = false;'), source.indexOf('function normalizedControlText(value)'));
 const flow = source.slice(source.indexOf('function modelPickerTrigger()'), source.indexOf('async function sendPrompt(text)'));
 
-function fixture(menuDelayQueries = 0) {
-  let open = false, advanced = false, selected = 'GPT-6', effort = 'medium';
+function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') {
+  let open = false, advanced = false, selected = initialModel, effort = compact ? 'high' : 'medium';
   let generating = false, blocked = false, paused = false, clock = 1000;
   const clicks = [], reports = [];
   const preferences = { preferredModel: 'GPT-5.6 Sol', preferredReasoning: 'high' };
@@ -17,11 +17,18 @@ function fixture(menuDelayQueries = 0) {
     closest() { return this.inert ? {} : null; },
     focus() {},
   });
-  const trigger = node('Thinking effort', { 'aria-label': 'Select ChatGPT model' });
+  const trigger = node(compact ? 'High' : 'Thinking effort',
+    compact ? { 'aria-haspopup': 'menu' } : { 'aria-label': 'Select ChatGPT model' });
   trigger.id = 'picker';
   trigger.getAttribute = name => ({ 'aria-controls': open ? 'menu' : null,
     'aria-expanded': String(open), 'data-selected-reasoning-effort': effort,
-    'aria-label': 'Select ChatGPT model' })[name] ?? null;
+    'aria-label': compact ? null : 'Select ChatGPT model',
+    'aria-haspopup': compact ? 'menu' : null })[name] ?? null;
+  if (compact) {
+    trigger.getAttribute = ((original) => name => name === 'data-selected-reasoning-effort'
+      ? null : original(name))(trigger.getAttribute);
+    trigger.hasAttribute = name => name === 'aria-haspopup' || name === 'aria-expanded';
+  }
   const toggle = node('Medium', { 'aria-label': 'Select model', role: 'menuitem' });
   const models = ['GPT-6', 'GPT-5.6 Sol', 'GPT-5.5\nLeaving on October 14'].map(label => {
     const item = node(label, { role: 'menuitemradio' });
@@ -29,12 +36,18 @@ function fixture(menuDelayQueries = 0) {
       : name === 'role' ? 'menuitemradio' : null;
     return item;
   });
-  const power = node('', { 'aria-label': 'Power', 'data-reasoning-slider': 'true', role: 'menuitem' });
+  const power = node('', compact ? { role: 'slider' }
+    : { 'aria-label': 'Power', 'data-reasoning-slider': 'true', role: 'menuitem' });
+  if (compact) {
+    power.getAttribute = name => name === 'aria-valuetext'
+      ? effort[0].toUpperCase() + effort.slice(1)
+      : name === 'role' ? 'slider' : null;
+  }
   power.dispatchEvent = event => {
     if (event.type !== 'keydown') return;
     const levels = ['instant', 'medium', 'high'];
     effort = levels[Math.max(0, Math.min(2, levels.indexOf(effort) + (event.key === 'ArrowRight' ? 1 : -1)))];
-    trigger.innerText = `${selected} ${effort}`;
+    trigger.innerText = compact ? effort[0].toUpperCase() + effort.slice(1) : `${selected} ${effort}`;
   };
   const menu = node('', { 'aria-labelledby': 'picker' });
   menu.querySelectorAll = selector => {
@@ -51,6 +64,8 @@ function fixture(menuDelayQueries = 0) {
       getElementById: id => id === 'menu' && open ? menu : null,
       querySelectorAll: selector => selector === 'button' ? [trigger] : open ? [menu] : [],
     },
+    findComposer: () => ({ closest: selector => selector === 'form'
+      ? { parentElement: { querySelectorAll: () => [trigger] } } : null }),
     normalizedControlText: text => (text || '').replace(/\s+/g, ' ').trim(),
     visible: element => Boolean(element), controlReady: element => Boolean(element && !element.disabled),
     approvalMenuOpen: () => open, isGenerating: () => generating, hasBlockingUi: () => blocked,
@@ -73,7 +88,7 @@ function fixture(menuDelayQueries = 0) {
       else if (element === toggle) advanced = true;
       else if (models.includes(element)) {
         selected = element.textContent.split('\n')[0]; advanced = false;
-        trigger.innerText = `${selected} ${effort}`;
+        trigger.innerText = compact ? effort[0].toUpperCase() + effort.slice(1) : `${selected} ${effort}`;
       }
     },
   };
@@ -113,6 +128,38 @@ function fixture(menuDelayQueries = 0) {
   f.preferences.preferredReasoning = 'instant';
   assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
   assert.equal(f.selection().effort, 'instant');
+
+  const gpt6 = fixture(0, true);
+  gpt6.preferences.preferredModel = 'GPT-6';
+  assert.equal(gpt6.trigger.innerText, 'High', 'GPT-6 only displays effort on its closed trigger');
+  assert.equal(gpt6.ctx.modelPickerTrigger(), gpt6.trigger,
+    'compact High trigger must be found beside the composer without a model label');
+  assert.equal(await gpt6.ctx.ensureModelPreferences(gpt6.preferences), true);
+  assert.equal(gpt6.selection().selected, 'GPT-6');
+  assert.equal(gpt6.trigger.innerText, 'High', 'verification does not require a visible GPT-6 name');
+  assert.equal(gpt6.clicks.includes(gpt6.models[0]), false,
+    'an already-checked GPT-6 entry must not be clicked again');
+  const gpt6Clicks = gpt6.clicks.length;
+  assert.equal(await gpt6.ctx.ensureModelPreferences(gpt6.preferences), true);
+  assert.equal(gpt6.clicks.length, gpt6Clicks, 'verified compact GPT-6 is cached');
+
+  const switchToGpt6 = fixture(0, true, 'GPT-5.6 Sol');
+  switchToGpt6.preferences.preferredModel = 'GPT-6';
+  switchToGpt6.preferences.preferredReasoning = 'medium';
+  assert.equal(await switchToGpt6.ctx.ensureModelPreferences(switchToGpt6.preferences), true,
+    'GPT-6 model selection and nested slider changes work from a High-only trigger');
+  assert.equal(switchToGpt6.selection().selected, 'GPT-6');
+  assert.equal(switchToGpt6.selection().effort, 'medium');
+  assert.equal(switchToGpt6.trigger.innerText, 'Medium',
+    'collapsed GPT-6 control displays only the new effort level');
+
+  const disabled = fixture();
+  disabled.preferences.enforceModelPreferences = false;
+  assert.equal(await disabled.ctx.ensureModelPreferences(disabled.preferences), true);
+  assert.equal(disabled.clicks.length, 0, 'unchecked box does not open picker or change reasoning');
+  disabled.preferences.enforceModelPreferences = true;
+  assert.equal(await disabled.ctx.ensureModelPreferences(disabled.preferences), true,
+    're-enabling automation rechecks the selected model');
 
   for (const gate of ['setGenerating', 'setBlocked', 'setPaused']) {
     const guarded = fixture(); guarded[gate](true);

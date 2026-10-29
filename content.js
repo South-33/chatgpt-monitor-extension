@@ -1084,19 +1084,34 @@ async function submitComposer(composer, expectedUrl = location.href) {
 }
 
 function modelPickerTrigger() {
-  return [...document.querySelectorAll('button')].find(button =>
+  const explicit = [...document.querySelectorAll('button')].find(button =>
     (/select.*(?:chatgpt )?model|thinking effort/i.test(button.getAttribute('aria-label') || '')
-      || button.hasAttribute('data-codex-intelligence-trigger')) && controlReady(button)) || null;
+      || button.hasAttribute('data-codex-intelligence-trigger')) && controlReady(button));
+  if (explicit) return explicit;
+
+  // GPT-6 hides its model name in the closed picker. The composer toolbar
+  // displays only the reasoning effort (for example, "High ▾"). Find that
+  // specific menu trigger near the composer, not any "High" text on the page.
+  const composer = findComposer();
+  const toolbar = composer?.closest('form')?.parentElement
+    || composer?.closest('[data-testid*="composer"]')
+    || composer?.parentElement?.parentElement?.parentElement;
+  if (!toolbar) return null;
+  return [...toolbar.querySelectorAll('button')].find(button =>
+    controlReady(button)
+      && /^(?:instant|medium|high)$/i.test(normalizedControlText(button.innerText || button.textContent || ''))) || null;
 }
 
 function pickerMenu(trigger) {
   const controlled = document.getElementById(trigger.getAttribute('aria-controls'));
   if (controlled && visible(controlled)) return controlled;
-  return [...document.querySelectorAll('[role="menu"]')].find(menu => visible(menu)
-    && menu.getAttribute('aria-labelledby') === trigger.id) || null;
+  const menus = [...document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"]')]
+    .filter(visible);
+  return menus.find(menu => trigger.id && menu.getAttribute('aria-labelledby') === trigger.id)
+    || (menus.length === 1 ? menus[0] : null);
 }
 
-function pickerItems(menu, selector = '[role="menuitemradio"], [role="option"], [role="menuitem"]') {
+function pickerItems(menu, selector = '[role="menuitemradio"], [role="option"], [role="menuitem"], [role="slider"], input[type="range"]') {
   // Both views remain mounted. Ignore the inert model list behind the power slider.
   return [...(menu?.querySelectorAll(selector) || [])].filter(item => controlReady(item)
     && !item.closest('[inert], [aria-hidden="true"]'));
@@ -1116,11 +1131,26 @@ function selectedModel(menu, name) {
 function selectedReasoning(trigger, menu) {
   const explicit = trigger.getAttribute('data-selected-reasoning-effort');
   if (explicit) return explicit.toLowerCase();
+  const slider = pickerItems(menu, '[role="slider"], input[type="range"], [data-reasoning-slider]').at(-1);
+  const effortText = slider?.getAttribute('aria-valuetext') || '';
+  const fromSlider = (effortText.match(/\b(instant|medium|high)\b/i) || [])[1];
+  if (fromSlider) return fromSlider.toLowerCase();
   const status = pickerItems(menu, '[role="status"]').map(item => item.textContent).join(' ');
-  return (status.match(/\b(instant|medium|high)\b/i) || [])[1]?.toLowerCase() || '';
+  const inMenu = (status.match(/\b(instant|medium|high)\b/i) || [])[1];
+  if (inMenu) return inMenu.toLowerCase();
+  // The compact GPT-6 control shows the effort but not the selected model.
+  const compact = normalizedControlText(trigger.innerText || trigger.textContent || '');
+  return /^(?:instant|medium|high)$/i.test(compact) ? compact.toLowerCase() : '';
 }
 
 async function ensureModelPreferences(preferences, force = false) {
+  if (preferences.enforceModelPreferences === false) {
+    // Switching the checkbox back on must re-verify what happened meanwhile.
+    verifiedModelSelection = null;
+    modelPreferenceFailure = '';
+    modelPreferenceRetryAt = 0;
+    return true;
+  }
   const model = preferences.preferredModel || '';
   const reasoning = preferences.preferredReasoning || '';
   if (!model && !reasoning) return true;
@@ -1135,7 +1165,8 @@ async function ensureModelPreferences(preferences, force = false) {
   // can appear while a menu is opening; none should be interrupted by this flow.
   const canAct = async () => {
     const current = await sendRuntime({ type: 'isTargetTab' });
-    return !stopped && current?.target && !current.paused && !isGenerating() && !hasBlockingUi()
+    return !stopped && current?.target && !current.paused && current.enforceModelPreferences !== false
+      && !isGenerating() && !hasBlockingUi()
       && (current.preferredModel || '') === model && (current.preferredReasoning || '') === reasoning;
   };
   if (!await canAct()) return false;
@@ -1181,13 +1212,17 @@ async function ensureModelPreferences(preferences, force = false) {
     if (reasoning && selectedReasoning(trigger, pickerMenu(trigger)) !== reasoning) {
       menu = pickerMenu(trigger);
       // A checked model in the advanced view returns to the simple power view.
-      let power = pickerItems(menu).find(item => /^(?:power|reasoning|thinking effort)$/i.test(item.getAttribute('aria-label') || ''));
+      let power = pickerItems(menu).find(item => item.getAttribute('role') === 'slider'
+        || item.matches?.('input[type="range"]')
+        || /^(?:power|reasoning|thinking effort)$/i.test(item.getAttribute('aria-label') || ''));
       if (!power) {
         const selected = pickerItems(menu).find(item => item.getAttribute('aria-checked') === 'true');
         if (selected && await canAct()) {
           clickControl(selected);
-          await waitFor(() => pickerItems(pickerMenu(trigger)).some(item => item.hasAttribute('data-reasoning-slider')), 2000);
-          power = pickerItems(pickerMenu(trigger)).find(item => item.hasAttribute('data-reasoning-slider'));
+          await waitFor(() => pickerItems(pickerMenu(trigger)).some(item => item.hasAttribute('data-reasoning-slider')
+            || item.getAttribute('role') === 'slider' || item.matches?.('input[type="range"]')), 2000);
+          power = pickerItems(pickerMenu(trigger)).find(item => item.hasAttribute('data-reasoning-slider')
+            || item.getAttribute('role') === 'slider' || item.matches?.('input[type="range"]'));
         }
       }
       reason = 'reasoning-unavailable';

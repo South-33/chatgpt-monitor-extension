@@ -14,7 +14,7 @@ const threshold = document.querySelector("#threshold");
 const thinkingMinutes = document.querySelector("#thinkingMinutes");
 const preferredModel = document.querySelector("#preferredModel");
 const preferredReasoning = document.querySelector("#preferredReasoning");
-let modelSaveTimer;
+const enforceModelPreferences = document.querySelector("#enforceModelPreferences");
 let pendingModelWrites = 0;
 let modelSaveQueue = Promise.resolve();
 const chooseLogFolderButton = document.querySelector("#chooseLogFolder");
@@ -55,12 +55,19 @@ let promptTabId = null;
 let pendingPromptWrites = 0;
 let savedSettings = null;
 
+function updateModelControls() {
+  preferredModel.disabled = !settingsLoaded || !enforceModelPreferences.checked;
+  preferredReasoning.disabled = !settingsLoaded || !enforceModelPreferences.checked;
+}
+
 function syncSavedSettings(settings) {
   savedSettings = settings;
   if (!settingsLoaded) return;
-  if (!modelSaveTimer && !pendingModelWrites) {
+  if (!pendingModelWrites) {
     if (document.activeElement !== preferredModel) preferredModel.value = settings.preferredModel || "";
     preferredReasoning.value = settings.preferredReasoning || "";
+    enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
+    updateModelControls();
   }
   const profile = settings.tabContinuePresets?.[promptTabId];
   const nextPresets = settings.continuePresets;
@@ -283,13 +290,14 @@ async function loadSettings() {
     thinkingMinutes.value = settings.thinkingMinutes || 10;
     preferredModel.value = settings.preferredModel || "";
     preferredReasoning.value = settings.preferredReasoning || "";
-    preferredModel.disabled = false;
-    preferredReasoning.disabled = false;
+    enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
+    enforceModelPreferences.disabled = false;
     presets = settings.continuePresets;
     activePreset = settings.continuePresetIndex;
     continuePrompt.value = presets[activePreset];
     renderPresetButtons();
     settingsLoaded = true;
+    updateModelControls();
     if (settingsRetryId) clearInterval(settingsRetryId);
     continuePrompt.disabled = false;
     threshold.disabled = false;
@@ -366,9 +374,11 @@ thinkingMinutes.addEventListener("input", () => {
 });
 thinkingMinutes.addEventListener("change", () => { void saveThreshold(); });
 async function saveModelPreferences() {
-  clearTimeout(modelSaveTimer);
-  modelSaveTimer = null;
-  const settings = { preferredModel: preferredModel.value.trim(), preferredReasoning: preferredReasoning.value };
+  const settings = {
+    enforceModelPreferences: enforceModelPreferences.checked,
+    preferredModel: preferredModel.value,
+    preferredReasoning: preferredReasoning.value,
+  };
   pendingModelWrites++;
   modelSaveQueue = modelSaveQueue.catch(() => {}).then(async () => {
     await chrome.runtime.sendMessage({ type: "saveSettings", settings });
@@ -378,17 +388,16 @@ async function saveModelPreferences() {
   });
   return modelSaveQueue;
 }
-preferredModel.addEventListener("input", () => {
-  clearTimeout(modelSaveTimer);
-  modelSaveTimer = setTimeout(saveModelPreferences, 400);
-});
 preferredModel.addEventListener("change", () => void saveModelPreferences());
 preferredReasoning.addEventListener("change", () => void saveModelPreferences());
+enforceModelPreferences.addEventListener("change", () => {
+  updateModelControls();
+  void saveModelPreferences();
+});
 chooseLogFolderButton.addEventListener("click", async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL("logs.html") });
 });
 window.addEventListener("pagehide", () => {
-  if (modelSaveTimer) void saveModelPreferences();
   if (promptTimer) void savePrompt();
   if (thresholdTimer) void saveThreshold();
 });
