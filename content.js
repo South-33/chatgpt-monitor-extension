@@ -34,6 +34,7 @@ let settledResponseUrl = location.href;
 let verifiedModelSelection = null;
 let modelPreferenceFailure = "";
 let modelPreferenceRetryAt = 0;
+let lastPromptFailureReason = 'unknown';
 const approvalDiagnostics = new WeakMap();
 
 function normalizedControlText(value) {
@@ -978,7 +979,10 @@ function validHandoffText(text) {
 function composerText(composer) {
   if (!composer) return "";
   if ("value" in composer) return normalizedText(composer.value);
-  const pluginSelector = "[data-composer-plugin-impression-id], a[href*='/plugins/']";
+  // A selected plugin mention is an embedded, non-editable editor node. Its
+  // visible name is NOT a user draft. Ignoring only impression links missed
+  // [app-mention-name], so fresh-chat handoff appeared to have existing text.
+  const pluginSelector = "[app-mention-name][contenteditable='false'], [data-composer-plugin-impression-id], a[href*='/plugins/']";
   if (!composer.querySelector(pluginSelector)) {
     return normalizedText(composer.innerText ?? composer.textContent ?? "");
   }
@@ -1070,16 +1074,26 @@ async function submitComposer(composer, expectedUrl = location.href) {
   );
 
   // ChatGPT creates the Send button only after text enters an empty composer.
-  await waitFor(() => sendButtonReady(findSendButton(composer)), 8000);
-  if (!sameConversation(expectedUrl) || findComposer() !== composer) return false;
+  if (!await waitFor(() => sendButtonReady(findSendButton(composer)), 8000)) {
+    lastPromptFailureReason = 'send-button-unavailable';
+    return false;
+  }
+  if (!sameConversation(expectedUrl) || findComposer() !== composer) {
+    lastPromptFailureReason = 'composer-changed';
+    return false;
+  }
   const button = findSendButton(composer);
   const ownership = await sendRuntime({ type: "isTargetTab" });
   if (stopped || !ownership?.target || ownership.paused || isGenerating() || hasBlockingUi()
-      || !sameConversation(expectedUrl) || findComposer() !== composer) return false;
+      || !sameConversation(expectedUrl) || findComposer() !== composer) {
+    lastPromptFailureReason = 'send-conditions-changed';
+    return false;
+  }
   if (sendButtonReady(button)) {
     HTMLButtonElement.prototype.click.call(button);
     if (await waitFor(submitted, 10000)) return true;
   }
+  lastPromptFailureReason = 'send-not-confirmed';
   return false;
 }
 
@@ -1266,29 +1280,64 @@ async function ensureModelPreferences(preferences, force = false) {
   return success;
 }
 
-async function sendPrompt(text) {
+async function sendPrompt(text, requireDevSpace = false) {
+  lastPromptFailureReason = 'unknown';
   const expectedUrl = location.href;
   const ownership = await sendRuntime({ type: "isTargetTab" });
-  if (stopped || !ownership?.target || ownership.paused || !sameConversation(expectedUrl)) return false;
+  if (stopped || !ownership?.target || ownership.paused || !sameConversation(expectedUrl)) {
+    lastPromptFailureReason = 'monitor-not-ready';
+    return false;
+  }
   const requested = normalizedText(text);
-  if (!requested || isGenerating() || hasBlockingUi()) return false;
-  if (!await waitFor(() => visible(findComposer()), 10000)) return false;
-  if (hasBlockingUi() || !sameConversation(expectedUrl)) return false;
-  if (!await ensureModelPreferences(ownership, true)) return false;
+  if (!requested || isGenerating() || hasBlockingUi()) {
+    lastPromptFailureReason = 'composer-blocked';
+    return false;
+  }
+  if (!await waitFor(() => visible(findComposer()), 10000)) {
+    lastPromptFailureReason = 'composer-unavailable';
+    return false;
+  }
+  if (hasBlockingUi() || !sameConversation(expectedUrl)) {
+    lastPromptFailureReason = 'composer-blocked';
+    return false;
+  }
+  // The scan has already verified the model before selecting the DevSpace
+  // mention. Reopening that menu can interrupt the selected plugin/editor.
+  // Reuse a valid verification cache, but still check if it has gone stale.
+  if (!await ensureModelPreferences(ownership)) {
+    lastPromptFailureReason = 'model-preference';
+    return false;
+  }
 
-  if (!sameConversation(expectedUrl)) return false;
+  if (!sameConversation(expectedUrl)) {
+    lastPromptFailureReason = 'conversation-changed';
+    return false;
+  }
+  if (requireDevSpace && !devSpaceSelected()) {
+    lastPromptFailureReason = 'plugin-selection-lost';
+    return false;
+  }
 
   const composer = findComposer();
   const existing = composerText(composer);
-  if (existing && comparableText(existing) !== comparableText(requested)) return false;
-  if (!existing && !await setComposerText(composer, text)) return false;
-  if (comparableText(composerText(composer)) !== comparableText(requested)) return false;
+  if (existing && comparableText(existing) !== comparableText(requested)) {
+    lastPromptFailureReason = 'composer-has-draft';
+    return false;
+  }
+  if (!existing && !await setComposerText(composer, text)) {
+    lastPromptFailureReason = 'composer-insert-failed';
+    return false;
+  }
+  if (comparableText(composerText(composer)) !== comparableText(requested)) {
+    lastPromptFailureReason = 'composer-text-mismatch';
+    return false;
+  }
   return submitComposer(composer, expectedUrl);
 }
 
-async function sendPromptWithRetry(text) {
+async function sendPromptWithRetry(text, requireDevSpace = false) {
   // The background owns delayed retries. One attempt must produce one click.
-  return sendPrompt(text);
+  return sendPrompt(text, requireDevSpace);
 }
 
 async function manualSwap(prompt, expectedUrl = location.href) {
@@ -1442,12 +1491,13 @@ async function deliverPendingHandoff() {
   }
   if (!sameConversation(expectedUrl)) return;
 
-  const ok = await sendPromptWithRetry(result.prompt);
+  const ok = await sendPromptWithRetry(result.prompt, true);
   if (ok) {
     await sendRuntime({ type: "handoffDelivered", url: location.href });
     return;
   }
-  await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false, url: location.href });
+  await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
+    reason: lastPromptFailureReason, url: location.href });
 }
 
 function conversationLoadRetryButton() {

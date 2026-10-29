@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'content.js'), 'utf8');
 const initialState = source.slice(source.indexOf('let stopped = false;'), source.indexOf('function normalizedControlText(value)'));
-const flow = source.slice(source.indexOf('function modelPickerTrigger()'), source.indexOf('async function sendPrompt(text)'));
+const flow = source.slice(source.indexOf('function modelPickerTrigger()'), source.indexOf('async function sendPrompt('));
 
 function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') {
   let open = false, advanced = false, selected = initialModel, effort = compact ? 'high' : 'medium';

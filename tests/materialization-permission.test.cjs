@@ -270,7 +270,7 @@ async function runAssistScenario() {
   assert.equal(result.allowButton.clicks, 0,
     "the main Allow button must never be clicked because that only grants one-time access");
 
-  const sendPromptStart = source.indexOf("async function sendPrompt(text)");
+  const sendPromptStart = source.indexOf("async function sendPrompt(");
   const sendPromptEnd = source.indexOf("async function sendPromptWithRetry", sendPromptStart);
   const sendPromptSource = source.slice(sendPromptStart, sendPromptEnd);
   assert.match(sendPromptSource, /hasBlockingUi\(\)/,

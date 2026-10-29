@@ -298,8 +298,17 @@ function send(message, sender = {}) {
     type: "commandResult",
     action: "deliverHandoff",
     ok: false,
+    reason: "composer-insert-failed",
     url: freshRetryTab.tab.url,
   }, freshRetryTab);
+  const failedInsertion = await send({ type: "getMonitorStatus", tabId: 20,
+    url: freshRetryTab.tab.url });
+  assert.match(failedInsertion.issue, /Could not insert the handoff/,
+    "popup must explain what failed instead of showing only a generic handoff error");
+  const handoffFailures = await send({ type: "getDiagnostics" });
+  assert.ok(handoffFailures.events.some(entry => entry.event === "prompt-submission-failed"
+    && entry.reason === "composer-insert-failed" && entry.tabId === 20),
+    "logs must record the insertion stage without recording private prompt text");
   assert.equal((await send({ type: "getPendingHandoff" }, freshRetryTab)).prompt, null,
     "failed prompt delivery must also wait for Retry");
   await send({ type: "retryNow", tabId: 20 }, freshRetryTab);

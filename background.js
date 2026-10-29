@@ -97,6 +97,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "watchdog-stop-failed",
   "action-requested",
   "action-result",
+  "prompt-submission-failed",
   "recovery-check-completed",
   "logging-configured",
   "handoff-incomplete",
@@ -153,6 +154,11 @@ function recordDiagnostic(event, details = {}) {
       "devspace", "permission-card", "conversation-scope",
       "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable",
+      "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
+      "model-preference", "conversation-changed", "composer-changed",
+      "composer-has-draft", "composer-insert-failed", "composer-text-mismatch",
+      "plugin-selection-lost",
+      "send-button-unavailable", "send-conditions-changed", "send-not-confirmed",
     ]),
   };
   for (const [key, values] of Object.entries(enumFields)) {
@@ -1233,6 +1239,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.actionPromptMode = "none";
         if (state.paused && state.resumePhase) state.phase = state.resumePhase;
         if (!message.ok) {
+          const handoffFailureMessages = {
+            "composer-has-draft": "The composer contains a different unsent draft. Clear it or send it manually, then Retry.",
+            "plugin-selection-lost": "DevSpace was deselected before sending. Reconnect it, then Retry.",
+            "composer-insert-failed": "Could not insert the handoff into ChatGPT's composer. Refresh ChatGPT, then Retry.",
+            "composer-text-mismatch": "ChatGPT did not retain the inserted handoff text. Refresh ChatGPT, then Retry.",
+            "model-preference": "Could not verify the selected model before sending. Check the model settings.",
+            "composer-unavailable": "ChatGPT's composer is not available. Refresh the tab, then Retry.",
+            "send-button-unavailable": "The handoff was prepared, but ChatGPT's Send button did not become ready.",
+            "send-not-confirmed": "Could not confirm that ChatGPT sent the handoff. Check for an unsent draft before Retry.",
+          };
+          if (message.action === "deliverHandoff") {
+            await recordDiagnostic("prompt-submission-failed", {
+              tabId, reason: message.reason || "unknown", phase: state.phase,
+            });
+          }
           const pendingHandoff = pendingHandoffs.get(tabId);
           if (pendingHandoff && ["enableDevSpace", "deliverHandoff"].includes(message.action)) {
             pendingHandoff.deliveryFailed = true;
@@ -1259,7 +1280,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             enableDevSpace: "Could not enable DevSpace in the fresh chat.",
             deliverHandoff: "Could not submit the handoff in the fresh chat.",
           };
-          state.issue = state.modelPreferenceIssue || issueByAction[message.action] || "Could not submit the prompt.";
+          state.issue = state.modelPreferenceIssue
+            || (message.action === "deliverHandoff" && handoffFailureMessages[message.reason])
+            || issueByAction[message.action] || "Could not submit the prompt.";
           if (state.retryAt || pendingHandoff?.retryAt) state.issue += " Retrying shortly.";
           if (state.paused) {
             state.resumePhase = state.phase;
