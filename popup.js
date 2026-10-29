@@ -27,10 +27,10 @@ const PHASE_LABELS = {
   working: "Watching",
   "sending-continue": "Continuing",
   "waiting-for-response": "Waiting for response",
-  "sending-block-review": "Checking block",
-  "waiting-for-block-review": "Waiting for review",
   "sending-handoff": "Requesting handoff",
   "waiting-for-handoff": "Waiting for handoff",
+  "sending-block-review": "Rechecking blocker",
+  "waiting-for-block-review": "Waiting for recheck",
   "opening-new-chat": "Opening fresh chat",
   "threshold-waiting": "Handoff due",
 };

@@ -58,7 +58,10 @@ function worker() {
     responseKey: key, latestResponseText: 'More work remains.' }, cycleSender);
   const generic1 = await continuation('cycle-generic-1');
   assert.ok(generic1.prompt.endsWith('\n\ncontinue'));
-  assert.equal(generic1.prompt.includes('TASK_FINISHED'), false, 'generic turns omit the completion contract');
+  assert.match(generic1.prompt, /TASK_FINISHED/, 'even short turns must have a clear completion signal');
+  assert.match(generic1.prompt, /TASK_BLOCKED/, 'even short turns must have a clear blocked signal');
+  assert.equal(generic1.prompt.includes('Completion contract:'), false,
+    'generic turns use a brief note, not the full custom completion contract');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: false, url: cycleUrl }, cycleSender);
   assert.equal(local.runtime.states[2].genericContinuesRemaining, 2, 'failed sends do not advance the cycle');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);

@@ -190,7 +190,29 @@ function send(message, sender = {}) {
     responseKey: "blocked-response",
     latestResponseText: "No safe work remains because user input is required.\n\nTASK_BLOCKED",
   }, blockedTab);
-  assert.equal(blockedAction.action, undefined, "the first block pauses without posting a review");
+  assert.equal(blockedAction.action, "sendBlockedReview", "the first block triggers exactly one reconsideration");
+  assert.match(blockedAction.prompt, /ORIGINAL user's goal/);
+  assert.match(blockedAction.prompt, /Do not invent a new goal/);
+  assert.equal(local.runtime.states[9].blockedReviewAttempted, true);
+  assert.equal(local.runtime.states[9].paused, false);
+  const repeatedBlock = await send({ type: "status", url: blockedTab.tab.url,
+    isGenerating: false, responseKey: "blocked-response",
+    latestResponseText: "No safe work remains.\nTASK_BLOCKED",
+  }, blockedTab);
+  assert.equal(repeatedBlock.action, undefined, "the same blocked response cannot send a second review");
+  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+    url: blockedTab.tab.url }, blockedTab);
+  const unrelatedOldResponse = await send({ type: "status", url: blockedTab.tab.url,
+    isGenerating: false, responseKey: "older-response", latestResponseText: "Unrelated reply.",
+    latestUserText: "Old user message", composerEmpty: true,
+  }, blockedTab);
+  assert.equal(unrelatedOldResponse.action, undefined, "an old response cannot satisfy reconsideration");
+  const secondBlock = await send({ type: "status", url: blockedTab.tab.url,
+    isGenerating: false, responseKey: "review-blocked-response",
+    latestResponseText: "The missing user approval is still required.\nTASK_BLOCKED",
+    latestUserText: blockedAction.prompt, composerEmpty: true,
+  }, blockedTab);
+  assert.equal(secondBlock.action, undefined, "a confirmed second block stops without another prompt");
   const blockedTime = local.runtime.states[9].maxWorkedSeconds;
   await send({ type: "status", url: blockedTab.tab.url, isGenerating: true, workedSeconds: 90 }, blockedTab);
   assert.equal(local.runtime.states[9].paused, true, "manual work cannot resume paused automation");
@@ -283,7 +305,7 @@ function send(message, sender = {}) {
   await send({ type: "retryNow", tabId: 20 }, freshRetryTab);
   assert.ok((await send({ type: "getPendingHandoff" }, freshRetryTab)).prompt);
 
-  // A terminal block pauses even at the handoff threshold.
+  // A terminal block gets one reconsideration even at the handoff threshold.
   await send({ type: "setMonitoring", enabled: true, tabId: 19, url: "https://chatgpt.com/c/blocked-at-threshold" });
   const blockedAtThresholdTab = { tab: { id: 19, url: "https://chatgpt.com/c/blocked-at-threshold" } };
   await send({ type: "historyScanComplete", url: blockedAtThresholdTab.tab.url, workedSeconds: 7800 }, blockedAtThresholdTab);
@@ -296,10 +318,19 @@ function send(message, sender = {}) {
     latestResponseText: "User action appears necessary.\n\nTASK_BLOCKED",
     consecutiveBlockedResponses: 1,
   }, blockedAtThresholdTab);
-  assert.equal(blockedAtThresholdAction.action, undefined, "a terminal marker pauses even when handoff is due");
+  assert.equal(blockedAtThresholdAction.action, "sendBlockedReview", "block review takes priority over handoff");
+  assert.equal(local.runtime.states[19].paused, false);
+  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+    url: blockedAtThresholdTab.tab.url }, blockedAtThresholdTab);
+  const thresholdSecondBlock = await send({ type: "status", url: blockedAtThresholdTab.tab.url,
+    isGenerating: false, responseKey: "blocked-at-threshold-review",
+    latestResponseText: "User action is still required.\nTASK_BLOCKED",
+    latestUserText: blockedAtThresholdAction.prompt, composerEmpty: true,
+  }, blockedAtThresholdTab);
+  assert.equal(thresholdSecondBlock.action, undefined);
   assert.equal(local.runtime.states[19].paused, true);
 
-  // Reloaded blocked responses still pause without posting another prompt.
+  // Historical blocked responses alone are not proof of a completed review.
   await send({ type: "setMonitoring", enabled: true, tabId: 15, url: "https://chatgpt.com/c/reloaded-blocked" });
   const reloadedBlockedTab = { tab: { id: 15, url: "https://chatgpt.com/c/reloaded-blocked" } };
   await send({ type: "historyScanComplete", url: reloadedBlockedTab.tab.url, workedSeconds: 60 }, reloadedBlockedTab);
@@ -312,7 +343,15 @@ function send(message, sender = {}) {
     terminalStatus: "blocked",
     consecutiveBlockedResponses: 2,
   }, reloadedBlockedTab);
-  assert.equal(reloadedBlockedAction.action, undefined);
+  assert.equal(reloadedBlockedAction.action, "sendBlockedReview");
+  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+    url: reloadedBlockedTab.tab.url }, reloadedBlockedTab);
+  const reloadedReview = await send({ type: "status", url: reloadedBlockedTab.tab.url,
+    isGenerating: false, responseKey: "reloaded-review-response",
+    latestResponseText: "Cannot proceed without the owner's credential.\nTASK_BLOCKED",
+    latestUserText: reloadedBlockedAction.prompt, composerEmpty: true,
+  }, reloadedBlockedTab);
+  assert.equal(reloadedReview.action, undefined);
   const reloadedBlockedStatus = await send({ type: "getMonitorStatus", tabId: 15, url: reloadedBlockedTab.tab.url });
   assert.equal(reloadedBlockedStatus.status, "blocked");
 

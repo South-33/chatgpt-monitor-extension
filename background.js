@@ -11,20 +11,21 @@ const DEFAULT_SETTINGS = {
   handoffPrompt:
     "You are performing a CONTEXT CHECKPOINT COMPACTION. Write a concise handoff for another agent continuing this task in a fresh chat. State the repository or workspace being worked in, including its absolute path when available. Preserve the original goal, important user decisions and constraints, current progress, verified results, unresolved questions, and the most useful next steps. Include reasoning or references only when they help the next agent make a decision, find essential work, or avoid repeating a mistake. Distinguish facts from assumptions. Skip routine environment metadata, tool versions, commit hashes, and details the next agent can easily inspect, unless the task specifically depends on them. Include only what matters for continuing the work; omit empty sections and incidental history. Before writing the handoff, take a brief preparation pass when useful: finish a small in-progress step, save important results, clean up loose ends, or update an existing note so the next agent can continue smoothly. Use judgment about what helps, but keep this bounded and do not start a major new work phase.",
   continuePrompt:
-    "Continue working toward the original goal. Reassess the current state and decide the best next action. Use available tools or research as needed, act on your decision, and verify the result. Do not merely summarize or repeat completed work.",
+    "Continue the original user task. Check the current state, identify the most useful unfinished step within the agreed scope, perform it with available authorized tools, and verify the result. Work through meaningful remaining steps before stopping. Do not repeat settled work, widen the goal, or invent extra tasks just to keep working. If the goal is already complete or genuinely blocked, say so instead of creating more work.",
   continuePresetIndex: 0,
   continuePresets: null,
   tabContinuePresets: {},
 
 };
 
-const GOAL_CONTRACTS = [
-  "Completion contract: if the original end goal is genuinely complete and verified, end your response with TASK_FINISHED on its own final line. If progress is blocked and user action is required, end with TASK_BLOCKED on its own final line. Otherwise include neither marker and keep working.",
-  "Completion contract: once the original goal is genuinely complete and verified, put TASK_FINISHED on its own final line. If progress is blocked and user action is required, put TASK_BLOCKED on its own final line. In all other cases, use neither marker and keep working.",
-];
+const GOAL_CONTRACT =
+  "Completion contract: Work only toward the original user's goal and constraints. Complete useful, authorized steps and verify results; do not invent extra work. When the original goal is complete and verified, end with TASK_FINISHED on a line by itself. If you cannot proceed without user action after checking reasonable alternatives, explain the blocker and end with TASK_BLOCKED on a line by itself. Otherwise use neither marker and keep working on the original goal.";
+
+const BLOCKED_REVIEW_PROMPT =
+  "Before stopping, reconsider the blocker against the ORIGINAL user's goal and constraints. Identify what specifically prevents progress. Check for a reasonable, safe, authorized alternative that would advance the same goal without user action; if one exists, try it and verify the outcome. Do not invent a new goal, repeat a failed step without new evidence, bypass permissions, or claim success without verification. If useful work on the original goal can continue, do it and omit the terminal markers. If the goal is fully complete and verified, end with TASK_FINISHED on its own final line. If no viable authorized next step remains and user action is genuinely required, explain exactly what is needed and end with TASK_BLOCKED on its own final line. This is the single reconsideration request; do not request another review.";
 
 const SHORT_CONTINUES = ["continue", "keep going"];
-const AUTOMATION_NOTE = "This is an automated continuation message. Extra notes may repeat; use the current task context and the user's latest instructions to decide which notes remain relevant.";
+const AUTOMATION_NOTE = "Automated continuation of the original user task. Keep the user's goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.";
 
 function customContinueText(text) {
   // Remove only the user's explicit automation preamble; preserve task notes.
@@ -68,19 +69,13 @@ const LEGACY_CONTINUE_PROMPTS = new Set([
 const STARTER_CONTINUE_PRESETS = [
   DEFAULT_SETTINGS.continuePrompt,
   "continue",
-  "Continue working toward the original goal. Take a step back and look at the progress from a birds eye view, Reassess the current state/assumptions. Ask stupid but smart question to yourself to see if there's a simpler/better way for the system as a whole. You can research the web for ideas and stuff also. Proactively housekeep, making the whole repo better like any harness that could be improved to make working in it better/faster/more efficient/more intuitive. Be smart and creative, you got this. Try to stay on goal and not drift. Best practice stuff, don't be scared to redo/rewrite something instead of patch on patch on patch if you think it is the best solution to the problem benefiting the project as a whole.",
-  `Continue working toward the original goal. Take a step back and look at the progress from a birds eye view, Reassess the current state/assumptions. Ask stupid but smart question to yourself to see if there's a simpler/better way for the system as a whole. You can research the web for ideas and stuff also. Proactively housekeep, making the whole repo better like any harness that could be improved to make working in it better/faster/more efficient/more intuitive. Be smart and creative, you got this. Try to stay on goal and not drift. Best practice stuff, don't be scared to redo/rewrite something instead of patch on patch on patch if you think it is the best solution to the problem benefiting the project as a whole.
-
-Don't be scared to take risk. Don't be scared to fail. as long as we properly learn from them, its all worth it. You got this, believe in yourself. be creative and smart and efficient. We want to meaningfully improve the model, not just small jumps. we want to significantly improve the model. understand the problem and architecture and critique and improve everything, anything is possible as long as its aligned with our goal. Don't be scared to rethink the whole thing bottom up, change things and just give it a real full shot. not cancelling ideas/runs too early or too too late. being smart, creative, and having good intuition.
-
-Think about whats the best next high value step, is it reviewing/auditing the benchmark/validation dataset, labeling and ogin thru more data or what?
-
-What is the biggest weakness of the model and how do we effecitvely fix it. be smart and have good intuition.`,
+  "Review the current state of the original user task. Identify the most important remaining gap, question assumptions that affect it, and choose the simplest useful next step. Use tools or research when they help, carry out the step, and verify the result. Improve supporting code or process only when it directly advances the requested goal. Do not broaden the scope or repeat work without a reason.",
+  "Critically reassess the original user goal, constraints, evidence and remaining work. Consider alternative approaches or a larger redesign only if evidence shows it would materially improve completing that goal. Run focused experiments or checks, preserve verified progress, and act on the best supported option. Finish the goal thoroughly, but do not expand it into unrelated research, cleanup, or optimizations merely to stay busy.",
 ];
 
 
 const HANDOFF_RELAY =
-  "Another agent worked on this task and left the handoff below. Use it to build on that work and avoid duplication. Verify the current state as needed, then continue toward the original goal using your own judgment. Do not merely summarize the handoff.";
+  "Another agent worked on this task and left the handoff below. Use it to build on that work and avoid duplication. Preserve the original user's goal and constraints, verify the current state as needed, and complete meaningful remaining work using your own judgment. Do not merely summarize the handoff or invent new goals to prolong the task.";
 
 const states = new Map();
 const lastSeenAt = new Map();
@@ -109,7 +104,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "handoff-delivered",
   "heartbeat",
 ]);
-const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "handoff", "none"]);
+const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "handoff", "blocked-review", "none"]);
 let diagnosticWrites = Promise.resolve();
 let settingsWrites = Promise.resolve();
 let runtimeWrites = Promise.resolve();
@@ -118,6 +113,7 @@ let settings = { ...DEFAULT_SETTINGS };
 const ready = initialize();
 
 function promptKind(action, prompt) {
+  if (action === "sendBlockedReview") return "blocked-review";
   if (action === "sendContinue" && prompt === RECOVERY_CHECK_PROMPT) return "recovery-check";
   if (action === "sendContinue") return isShortContinuePrompt(prompt) ? "short-continue" : "custom-continue";
   if (action === "sendHandoff") return "handoff";
@@ -137,15 +133,15 @@ function recordDiagnostic(event, details = {}) {
       "extended-thinking-watchdog", "extended-thinking-retry",
       "extended-thinking-handoff-priority",
       "extended-thinking-threshold", "manual-continue", "manual-handoff",
-      "incomplete-handoff",
+      "incomplete-handoff", "blocked-review",
     ]),
     action: new Set([
       "sendContinue", "sendHandoff", "rotateWithHandoff",
-      "enableDevSpace", "deliverHandoff",
+      "enableDevSpace", "deliverHandoff", "sendBlockedReview",
     ]),
     phase: new Set([
       "watching", "working", "paused", "sending-continue", "waiting-for-response",
-      "sending-handoff",
+      "sending-handoff", "sending-block-review", "waiting-for-block-review",
       "waiting-for-handoff", "opening-new-chat", "threshold-waiting", "finished",
     ]),
     promptMode: DIAGNOSTIC_PROMPT_MODES,
@@ -252,12 +248,9 @@ async function initialize() {
     delete state.useSavedGoal;
     delete state.blockReviewSent;
     delete state.handoffWasBlocked;
-    if (["sending-block-review", "waiting-for-block-review"].includes(state.phase)) {
-      state.phase = state.paused ? "paused" : "watching";
-      state.actionPrompt = "";
-      state.actionStartedAt = null;
-      state.retryAt = null;
-    }
+    // Keep the one-time review flag and its pending phase across worker restarts.
+    state.blockedReviewAttempted = state.blockedReviewAttempted === true
+      || ["sending-block-review", "waiting-for-block-review"].includes(state.phase);
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -356,6 +349,7 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
     activeStartedAt: null,
     historyScanned: false,
     lastResponseKey: "",
+    blockedReviewAttempted: false,
     lastRecoveryKey: "",
     issue: "",
     handoffShortRetryUsed: false,
@@ -420,7 +414,7 @@ function terminalStatus(text) {
 }
 
 function addGoalContract(prompt) {
-  return `${prompt.trim()}\n\n${varySpacing(choose(GOAL_CONTRACTS))}`;
+  return `${prompt.trim()}\n\n${GOAL_CONTRACT}`;
 }
 
 function relayPrompt(handoff) {
@@ -500,6 +494,16 @@ function requestContinue(state, prompt, source = "automatic") {
   return nextAction(state, "sending-continue", "sendContinue", prompt);
 }
 
+function requestBlockedReview(state, source = "blocked-review") {
+  // Mark the attempt before dispatch so a restart cannot start a second
+  // reconsideration. It does not consume the normal continuation cadence.
+  state.blockedReviewAttempted = true;
+  state.pendingNormalContinue = null;
+  state.recoveryCheckPrompt = "";
+  state.nextActionSource = source;
+  return nextAction(state, "sending-block-review", "sendBlockedReview", BLOCKED_REVIEW_PROMPT);
+}
+
 function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
   state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = RECOVERY_CHECK_PROMPT;
@@ -530,6 +534,7 @@ function markTransientActionAccepted(state) {
     state.pendingNormalContinue = null;
   }
   if (state.phase === "sending-handoff") state.phase = "waiting-for-handoff";
+  if (state.phase === "sending-block-review") state.phase = "waiting-for-block-review";
   if (state.phase === "sending-continue") state.phase = "waiting-for-response";
   state.actionStartedAt = null;
   state.actionPrompt = "";
@@ -539,11 +544,12 @@ function markTransientActionAccepted(state) {
 }
 
 function transientActionTimedOut(state, now = Date.now()) {
-  return ["sending-continue", "sending-handoff"].includes(state?.phase)
+  return ["sending-continue", "sending-handoff", "sending-block-review"].includes(state?.phase)
     && (!state.actionStartedAt || now - state.actionStartedAt >= 30000);
 }
 
 function retryTransientAction(state) {
+  if (state.phase === "sending-block-review") return requestBlockedReview(state, "action-retry");
   if (state.phase === "waiting-for-handoff" && state.handoffShortRetryUsed) {
     return requestHandoff(state, addGoalContract(handoffPrompt()), "incomplete-handoff");
   }
@@ -782,7 +788,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const state = isCurrentTab ? states.get(tabId) : null;
       const lastSeen = isCurrentTab ? lastSeenAt.get(tabId) || 0 : 0;
       const stale = isCurrentTab && Date.now() - lastSeen >= 15000;
-      const recoveryProtected = ["sending-continue", "sending-handoff"].includes(state?.phase)
+      const recoveryProtected = ["sending-continue", "sending-handoff", "sending-block-review"].includes(state?.phase)
         && !transientActionTimedOut(state);
       const lastAttempt = lastRecoveryAttemptAt.get(tabId) || 0;
       if (stale && !recoveryProtected && Date.now() - lastAttempt >= 10000) {
@@ -826,6 +832,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.paused = paused;
       if (!paused && (state.resumeContinuePending || state.taskStatus === "finished" || state.taskStatus === "blocked")) {
         state.taskStatus = "ongoing";
+        // A deliberate user Resume starts a new attempt; otherwise a blocked
+        // conversation gets at most one automated reconsideration.
+        state.blockedReviewAttempted = false;
         state.resumeContinuePending = true;
         state.resumePhase = null;
         state.retryAt = null;
@@ -856,8 +865,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.lastRecoveryKey = "";
       state.lastRecoveryAt = null;
       state.recoveryStreak = 0;
-      const pendingAction = ["sending-handoff", "sending-continue"].includes(state.phase);
-      if (!pendingAction) state.phase = "watching";
+      const pendingAction = ["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase);
+      if (!pendingAction && state.phase !== "waiting-for-block-review") state.phase = "watching";
       state.sendFailures = 0;
       state.retryAt = pendingAction ? Date.now() : null;
       state.issue = "";
@@ -1160,7 +1169,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } else {
             state.issue = "";
             state.sendFailures = 0;
-            if (["sending-handoff", "sending-continue"].includes(state.phase)) state.retryAt = Date.now();
+            if (["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase)) state.retryAt = Date.now();
           }
           await persistRuntime();
         }
@@ -1231,7 +1240,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             pendingHandoff.retryAt = pendingHandoff.attempts < 3
               ? Date.now() + 30000 * pendingHandoff.attempts : null;
           }
-          const retryable = ["sendHandoff", "sendContinue"].includes(message.action);
+          const retryable = ["sendHandoff", "sendContinue", "sendBlockedReview"].includes(message.action);
           if (retryable) {
             state.sendFailures = (state.sendFailures || 0) + 1;
             state.retryAt = state.sendFailures < 3 ? Date.now() + 30000 * state.sendFailures : null;
@@ -1319,9 +1328,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.recoveryCheckPrompt = "";
         state.issue = "";
         changed = true;
-      } else if (["sending-handoff", "sending-continue"].includes(state.phase)) {
+      } else if (["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase)) {
         // Generation may belong to the previous user message (manual handoff
         // can stop it). It is not proof that our prompt was submitted.
+      } else if (state.phase === "waiting-for-block-review") {
+        // A review response is being generated. It does not turn the review
+        // into a normal working phase or trigger an early handoff.
       } else if (
         thresholdReached(state)
         && state.phase !== "waiting-for-handoff"
@@ -1357,7 +1369,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (["sending-continue", "sending-handoff"].includes(state.phase)
+    if (["sending-continue", "sending-handoff", "sending-block-review"].includes(state.phase)
         && !state.retryAt) {
       // An old response may remain visible until the submitted prompt starts
       // its own turn. Do not act on it before a real send acknowledgement.
@@ -1380,7 +1392,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (state.retryAt && !terminalStatus(message.latestResponseText)) {
+    if (state.retryAt && (state.phase === "sending-block-review"
+        || !terminalStatus(message.latestResponseText))) {
       // A missing acknowledgement is reconciled before another click.
       if (sameSubmittedPrompt(message.latestUserText, state.actionPrompt) && message.composerEmpty) {
         markTransientActionAccepted(state);
@@ -1403,6 +1416,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // composer is idle, so recover once for this turn even without an error card.
     if (message.recoveryKey && message.recoveryKey !== state.lastRecoveryKey
         && state.taskStatus === "ongoing" && !message.latestResponseText) {
+      if (state.phase === "waiting-for-block-review") {
+        state.paused = true;
+        state.phase = "paused";
+        state.issue = "The reconsideration reply could not be read. Check ChatGPT, then Resume if more work is possible.";
+        await persistRuntime();
+        sendResponse({});
+        return;
+      }
       if (state.recoveryCheckPrompt) {
         state.paused = true;
         state.phase = "paused";
@@ -1446,6 +1467,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const isNewResponse = Boolean(
       message.responseKey && message.responseKey !== state.lastResponseKey,
     );
+    // Only the reply to our reconsideration can resolve the blocked state.
+    // A stale assistant turn must not be accepted as the review's answer.
+    if (state.phase === "waiting-for-block-review"
+        && (!isNewResponse || !sameSubmittedPrompt(message.latestUserText, BLOCKED_REVIEW_PROMPT))) {
+      sendResponse({});
+      return;
+    }
+    if (state.phase === "waiting-for-block-review" && !message.latestResponseText) {
+      // The review may still be mounting. Do not consume the turn or lose the
+      // review state until a readable answer or a clear recovery error arrives.
+      sendResponse({});
+      return;
+    }
     if (state.recoveryCheckPrompt && isNewResponse
         && !sameSubmittedPrompt(message.latestUserText, state.recoveryCheckPrompt)) {
       sendResponse({});
@@ -1453,6 +1487,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     const terminal = isNewResponse ? terminalStatus(message.latestResponseText) : null;
     if (terminal) {
+      if (terminal === "blocked" && !state.blockedReviewAttempted) {
+        // An unsubmitted user draft must never be overwritten by automation.
+        if (message.composerEmpty === false) { sendResponse({}); return; }
+        state.lastResponseKey = message.responseKey;
+        const review = requestBlockedReview(state);
+        await persistRuntime();
+        sendResponse(review);
+        return;
+      }
       if (state.recoveryCheckPrompt) void recordDiagnostic("recovery-check-completed", { tabId });
       state.recoveryCheckPrompt = "";
       state.lastResponseKey = message.responseKey || state.lastResponseKey;
@@ -1521,6 +1564,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void recordDiagnostic("recovery-check-completed", { tabId });
       state.recoveryCheckPrompt = "";
     }
+    if (state.phase === "waiting-for-block-review") state.phase = "watching";
     if (handoffInProgress(state)) {
       const result = completedHandoffAction(state, message.latestResponseText, message.latestResponseIsSubstantive);
       await persistRuntime();
