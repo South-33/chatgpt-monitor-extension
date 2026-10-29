@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Monitor logs</title>
+    <style>
+      :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; }
+      body { max-width: 600px; margin: 48px auto; padding: 0 20px; background: #15171b; color: #f3f4f6; }
+      h1 { font-size: 23px; }
+      p { color: #b8beca; }
+      button { padding: 10px 16px; border: 0; border-radius: 8px; background: #7c9cff; color: #0b1020; font: inherit; font-weight: 700; cursor: pointer; }
+      #status { margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Automatic logs</h1>
+    <p>Choose the project folder <code>D:\Project\chatgpt-agent-monitor-extension\logs</code> once. Agent Monitor will append dated JSONL files while it runs. Logs contain action and recovery events, never chat text or page URLs.</p>
+    <button id="chooseFolder">Choose folder</button>
+    <p id="status" role="status"></p>
+    <script src="log-files.js"></script>
+    <script src="logs.js"></script>
+  </body>
+</html>
