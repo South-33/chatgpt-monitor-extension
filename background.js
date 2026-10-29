@@ -640,7 +640,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "logFolderChanged") {
       logFileError = "";
       await recordDiagnostic("logging-configured");
-      sendResponse({ ok: true });
+      sendResponse({ ok: !logFileError, logFileError });
       return;
     }
 

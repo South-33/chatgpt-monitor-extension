@@ -16,7 +16,7 @@ A Manifest V3 extension for independently continuing and handing off ChatGPT tas
 - Pause keeps monitoring and accumulated time. Resume restores the active flow. Stop removes monitoring.
 - Each conversation sends the selected custom continuation first, then two plain `continue` turns, then repeats. A brief automation note accompanies normal continuations; the completion contract accompanies only custom turns. Changing the selected prompt sends its new text on the next normal continuation. Only acknowledged sends advance the cycle, and recovery check-ins do not count.
 - A standalone final `TASK_FINISHED` or `TASK_BLOCKED` pauses immediately. Manual messages and cancellations stay paused. Resume queues one selected continuation and waits for an idle, empty composer.
-- Tool approval cards take priority over continuation and handoff. The detector uses Deny/Allow controls and the dropdown, independent of heading or attachment wording, then selects conversation-wide permission.
+- Other tool approval cards block automated continuation and must be reviewed manually. The automatic permission handler only matches the specific DevSpace file-materialization request.
 - Plugin selection accepts both DevSpace and spacedev. Fresh-chat lookup tries both names, recognizes either selected mention, and preserves unrelated drafts.
 - Model and reasoning settings are checked while idle and verified before every automated prompt. Generation and Pause prevent changes. Unavailable choices block submission and show a clear error; they retry at most every 30 seconds. Successful idle checks are reused until the page, picker, settings, or displayed selection changes.
 - Stop is the generation signal; stale Thinking text does not count. After generation ends, readable final text is checked before continuing. Drafts are never overwritten.
@@ -29,7 +29,7 @@ A Manifest V3 extension for independently continuing and handing off ChatGPT tas
 
 ## Logs
 
-Choose the `logs` directory through **Set folder**. Chrome requires a user gesture to grant or renew folder access.
+Choose **Logs / folder**, then **Choose folder**, and select the included `logs` directory. If Chrome revokes access, use **Reconnect access**. The folder picker requires a direct user gesture. If Chrome blocks folder access, choose **Download logs instead** to export the last 500 saved events plus all pending events as JSONL. Manual exports do not clear buffered events.
 
 Dated JSONL files contain timestamped actions, retries, approvals, pause changes, recovery events, and a five-minute heartbeat with tab IDs. Chat text and page URLs are excluded. Repeated approval detections are deduplicated. Events queue persistently in IndexedDB when file access fails and flush on reconnection, subject to browser storage limits. The last 500 events also remain in extension storage.
 

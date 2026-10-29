@@ -6,17 +6,24 @@
     <title>Agent Monitor logs</title>
     <style>
       :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; }
-      body { max-width: 600px; margin: 48px auto; padding: 0 20px; background: #15171b; color: #f3f4f6; }
+      body { max-width: 640px; margin: 48px auto; padding: 0 20px; background: #15171b; color: #f3f4f6; }
       h1 { font-size: 23px; }
       p { color: #b8beca; }
       button { padding: 10px 16px; border: 0; border-radius: 8px; background: #7c9cff; color: #0b1020; font: inherit; font-weight: 700; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: wait; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+      .secondary { background: #343b48; color: #f3f4f6; }
       #status { margin-top: 16px; }
     </style>
   </head>
   <body>
     <h1>Automatic logs</h1>
-    <p>Choose the project folder <code>D:\Project\chatgpt-agent-monitor-extension\logs</code> once. Agent Monitor will append dated JSONL files while it runs. Logs contain action and recovery events, never chat text or page URLs.</p>
-    <button id="chooseFolder">Choose folder</button>
+    <p>Choose <code>D:\Project\chatgpt-agent-monitor-extension\logs</code> to append dated JSONL diagnostic files. The folder is included in the project. Chrome may require you to reconnect write access later. Logs do not contain chat text or page URLs.</p>
+    <div class="actions">
+      <button id="chooseFolder">Choose folder</button>
+      <button id="reconnectFolder" class="secondary" hidden>Reconnect access</button>
+      <button id="downloadLogs" class="secondary">Download logs instead</button>
+    </div>
     <p id="status" role="status"></p>
     <script src="log-files.js"></script>
     <script src="logs.js"></script>

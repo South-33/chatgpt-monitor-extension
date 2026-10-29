@@ -157,7 +157,7 @@ function renderStatus(result) {
       || ["sending-handoff", "waiting-for-handoff", "opening-new-chat"].includes(result.phase)));
   if (result.logFileError) logFolderStatus.textContent = result.logFileError;
   else logFolderStatus.textContent = logFolderName ? `Logs: ${logFolderName}` : "Logs: no folder";
-  chooseLogFolderButton.hidden = Boolean(logFolderName && !result.logFileError);
+  chooseLogFolderButton.hidden = false;
 }
 
 function isChatUrl(url) {
@@ -311,7 +311,7 @@ async function load() {
   try {
     logFolderName = (await AgentMonitorLogFiles.directory())?.name || "";
     logFolderStatus.textContent = logFolderName ? `Logs: ${logFolderName}` : "Logs: no folder";
-    chooseLogFolderButton.hidden = Boolean(logFolderName && !currentStatus?.logFileError);
+    chooseLogFolderButton.hidden = false;
   } catch { logFolderStatus.textContent = "Logs: unavailable"; }
 }
 

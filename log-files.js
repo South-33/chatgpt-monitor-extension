@@ -44,6 +44,15 @@ const AgentMonitorLogFiles = (() => {
     });
   }
 
+  async function pendingEntries() {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction(PENDING, "readonly").objectStore(PENDING).getAll();
+      request.onsuccess = () => resolve(request.result.map(({ entry }) => entry));
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   async function append(entry) {
     // Persist before checking folder access. Browser permission can expire;
     // queued events are written on the next successful append/reconnection.
@@ -98,5 +107,5 @@ const AgentMonitorLogFiles = (() => {
     return true;
   }
 
-  return { directory, setDirectory, append };
+  return { directory, setDirectory, pendingEntries, append };
 })();

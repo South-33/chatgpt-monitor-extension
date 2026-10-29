@@ -44,7 +44,7 @@ const db = {
             queueMicrotask(() => transaction.oncomplete());
           },
           getAll(_query, count) {
-            const request = { result: [...pending.values()].slice(0, count) };
+            const request = { result: [...pending.values()].slice(0, count ?? Infinity) };
             queueMicrotask(() => request.onsuccess());
             return request;
           },
@@ -90,6 +90,8 @@ vm.runInNewContext(`${source}; this.logs = AgentMonitorLogFiles;`, context);
   await assert.rejects(context.logs.append({ time: "2026-09-30T01:00:02Z", event: "blocked" }),
     (error) => error.name === "NotAllowedError");
   assert.equal(pending.size, 1, "permission loss must retain the event durably");
+  assert.equal((await context.logs.pendingEntries()).length, 1,
+    'buffered diagnostic events are available for manual export');
   permission = "granted";
   await context.logs.append({ time: "2026-10-01T01:00:00Z", event: "reconnected" });
   assert.equal(pending.size, 0);
