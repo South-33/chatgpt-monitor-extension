@@ -1232,6 +1232,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           action: message.action,
           promptMode: state.actionPromptMode || promptKind(message.action, state.actionPrompt),
           phase: state.phase,
+          reason: message.ok ? undefined : message.reason || "unknown",
           success: Boolean(message.ok),
           attempt: (state.sendFailures || 0) + 1,
         });
@@ -1239,13 +1240,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.actionPromptMode = "none";
         if (state.paused && state.resumePhase) state.phase = state.resumePhase;
         if (!message.ok) {
-          const handoffFailureMessages = {
+          const promptFailureMessages = {
+            "monitor-not-ready": "The monitor was no longer ready to send.",
+            "composer-blocked": "ChatGPT became busy before the prompt could be sent.",
             "composer-has-draft": "The composer contains a different unsent draft. Clear it or send it manually, then Retry.",
             "plugin-selection-lost": "DevSpace was deselected before sending. Reconnect it, then Retry.",
-            "composer-insert-failed": "Could not insert the handoff into ChatGPT's composer. Refresh ChatGPT, then Retry.",
-            "composer-text-mismatch": "ChatGPT did not retain the inserted handoff text. Refresh ChatGPT, then Retry.",
+            "composer-insert-failed": "Could not insert the prompt into ChatGPT's composer. Refresh ChatGPT, then Retry.",
+            "composer-text-mismatch": "ChatGPT did not retain the inserted prompt text. Refresh ChatGPT, then Retry.",
             "model-preference": "Could not verify the selected model before sending. Check the model settings.",
             "composer-unavailable": "ChatGPT's composer is not available. Refresh the tab, then Retry.",
+            "conversation-changed": "The monitored conversation changed before the prompt could be sent.",
+            "composer-changed": "ChatGPT replaced the composer before the prompt could be sent.",
+            "send-button-unavailable": "The prompt was prepared, but ChatGPT's Send button did not become ready.",
+            "send-conditions-changed": "ChatGPT changed state before the Send click could run.",
+            "send-not-confirmed": "Could not confirm that ChatGPT sent the prompt. Check for an unsent draft before Retry.",
+          };
+          const handoffFailureMessages = {
+            "composer-insert-failed": "Could not insert the handoff into ChatGPT's composer. Refresh ChatGPT, then Retry.",
+            "composer-text-mismatch": "ChatGPT did not retain the inserted handoff text. Refresh ChatGPT, then Retry.",
             "send-button-unavailable": "The handoff was prepared, but ChatGPT's Send button did not become ready.",
             "send-not-confirmed": "Could not confirm that ChatGPT sent the handoff. Check for an unsent draft before Retry.",
           };
@@ -1282,6 +1294,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           };
           state.issue = state.modelPreferenceIssue
             || (message.action === "deliverHandoff" && handoffFailureMessages[message.reason])
+            || promptFailureMessages[message.reason]
             || issueByAction[message.action] || "Could not submit the prompt.";
           if (state.retryAt || pendingHandoff?.retryAt) state.issue += " Retrying shortly.";
           if (state.paused) {

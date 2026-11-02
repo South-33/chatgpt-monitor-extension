@@ -63,5 +63,15 @@ const reply = 'The agent completed the first investigation and recorded the test
     latestUserText: 'Prior user message', composerEmpty: true }, 2);
   assert.equal(prior.action, undefined, 'unacknowledged continuation cannot dispatch a second prompt');
   assert.equal(local.runtime.states[2].phase, 'sending-continue');
+
+  await send({ type: 'commandResult', action: 'sendContinue', ok: false,
+    reason: 'composer-blocked', url: url(2) }, 2);
+  const diagnostics = await send({ type: 'getDiagnostics' }, 2);
+  const failedSend = diagnostics.events.findLast(entry =>
+    entry.event === 'action-result' && entry.tabId === 2 && entry.success === false);
+  assert.equal(failedSend.reason, 'composer-blocked',
+    'failed continuation diagnostics keep the exact content-script reason');
+  assert.match(local.runtime.states[2].issue, /became busy/i,
+    'the popup issue explains the fast precondition failure');
   console.log('action_acknowledgement_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

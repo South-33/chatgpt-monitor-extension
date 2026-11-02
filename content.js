@@ -1361,6 +1361,7 @@ async function manualSwap(prompt, expectedUrl = location.href) {
       type: "commandResult",
       action: "sendHandoff",
       ok,
+      reason: ok ? undefined : lastPromptFailureReason,
       url: location.href,
     });
     manualActionRunning = false;
@@ -1382,6 +1383,7 @@ async function manualContinue(prompt, expectedUrl = location.href) {
       type: "commandResult",
       action: "sendContinue",
       ok,
+      reason: ok ? undefined : lastPromptFailureReason,
       url: location.href,
     });
     manualActionRunning = false;
@@ -1451,7 +1453,13 @@ async function handleAction(result) {
   if (hasBlockingUi()) return;
   if (["sendHandoff", "sendContinue", "sendBlockedReview"].includes(result.action)) {
     const ok = await sendPromptWithRetry(result.prompt);
-    await sendRuntime({ type: "commandResult", action: result.action, ok, url: location.href });
+    await sendRuntime({
+      type: "commandResult",
+      action: result.action,
+      ok,
+      reason: ok ? undefined : lastPromptFailureReason,
+      url: location.href,
+    });
     return;
   }
 

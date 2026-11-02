@@ -654,6 +654,24 @@ function send(message, sender = {}) {
   assert.equal(thinkingStatus.extendedThinkingStartedAt, null,
     "the popup timer clears when the live notice disappears");
 
+  await send({ type: "setMonitoring", enabled: true, tabId: 33, url: "https://chatgpt.com/c/thinking-ended-normally" });
+  const normalThinkingTab = { tab: { id: 33, url: "https://chatgpt.com/c/thinking-ended-normally" } };
+  await send({ type: "thinkingNoticeTimer", url: normalThinkingTab.tab.url,
+    startedAt: Date.now() - 60_000 }, normalThinkingTab);
+  await send({ type: "thinkingNoticeTimer", url: normalThinkingTab.tab.url,
+    startedAt: null }, normalThinkingTab);
+  const normalAfterNotice = await send({
+    type: "status", url: normalThinkingTab.tab.url, isGenerating: false,
+    responseKey: "normal-after-thinking-notice",
+    latestResponseText: "The long-thinking notice cleared and the task continued normally.",
+    latestResponseIsSubstantive: true, composerEmpty: true,
+  }, normalThinkingTab);
+  assert.equal(normalAfterNotice.action, "sendContinue",
+    "a thinking notice that disappears before timeout returns to the normal completion flow");
+  assert.notEqual(normalAfterNotice.prompt,
+    "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.",
+    "normal completion must not use the watchdog recovery check-in");
+
   const plainRecovery = await send({
     type: "extendedThinkingRecoveryReady",
     url: longThinkingTab.tab.url,
