@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
 const composerHelpers = source.slice(source.indexOf('function normalizedText('), source.indexOf('async function clearComposer('));
 const sendSource = source.slice(source.indexOf('async function sendPrompt('), source.indexOf('async function sendPromptWithRetry('));
+const deliverySource = source.slice(source.indexOf('async function preparePendingHandoff('), source.indexOf('function conversationLoadRetryButton('));
 
 const textNode = value => ({ nodeType: 3, textContent: value });
 const mention = {
@@ -72,6 +73,43 @@ async function scenario(initialDraft = '', pluginPresent = true) {
   return { context, composer, delivered, inserted, sendAttempts, forcedVerification };
 }
 
+async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}) {
+  const events = [];
+  let pluginSelected = false;
+  let delivered = false;
+  const prompt = 'Relay the captured handoff into this fresh chat.';
+  const preferences = { preferredModel: 'GPT-5.6 Sol', preferredReasoning: 'high' };
+  const context = {
+    location: { href: 'https://chatgpt.com/' },
+    lastPromptFailureReason: 'unknown',
+    hasBlockingUi: () => false,
+    sameConversation: () => true,
+    isConversationPage: () => false,
+    latestUserMatchesPrompt: () => false,
+    devSpaceSelected: () => pluginSelected,
+    enableDevSpace: async () => { events.push('devspace'); pluginSelected = true; return true; },
+    ensureModelPreferences: async (_preferences, force) => {
+      events.push(`model:${force}`);
+      if (!modelKeepsPlugin) pluginSelected = false;
+      return modelOk;
+    },
+    sendPromptWithRetry: async (_prompt, requireDevSpace) => {
+      events.push(`send:${requireDevSpace}`);
+      delivered = true;
+      return true;
+    },
+    sendRuntime: async message => {
+      if (message.type === 'getPendingHandoff') return { prompt };
+      if (message.type === 'handoffDelivered') events.push('delivered');
+      if (message.type === 'commandResult') events.push(`failed:${message.reason}`);
+      return { ok: true };
+    },
+  };
+  vm.runInNewContext(deliverySource, context);
+  await context.deliverPendingHandoff(preferences);
+  return { events, delivered, reason: context.lastPromptFailureReason };
+}
+
 (async () => {
   const clean = await scenario();
   assert.equal(clean.delivered, true, 'plugin-only editor accepts a handoff');
@@ -95,5 +133,21 @@ async function scenario(initialDraft = '', pluginPresent = true) {
     'handoff must not be submitted without its selected DevSpace attachment');
   assert.equal(missingPlugin.inserted, 0);
   assert.equal(missingPlugin.context.lastPromptFailureReason, 'plugin-selection-lost');
+
+  const fresh = await deliveryScenario();
+  assert.deepEqual(fresh.events, ['devspace', 'model:true', 'send:true', 'delivered'],
+    'fresh handoff selects DevSpace, then force-verifies the model before sending');
+  assert.equal(fresh.delivered, true);
+
+  const modelFailure = await deliveryScenario({ modelOk: false });
+  assert.deepEqual(modelFailure.events, ['devspace', 'model:true', 'failed:model-preference']);
+  assert.equal(modelFailure.delivered, false, 'handoff must not send when preferred model verification fails');
+
+  const pluginLost = await deliveryScenario({ modelKeepsPlugin: false });
+  assert.deepEqual(pluginLost.events,
+    ['devspace', 'model:true', 'devspace', 'model:true', 'failed:plugin-selection-lost'],
+    'retry the joint state once when model selection drops the plugin');
+  assert.equal(pluginLost.delivered, false,
+    'handoff must not send unless preferred model and DevSpace are valid together');
   console.log('handoff_composer_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1480,7 +1480,30 @@ async function handleAction(result) {
   }
 }
 
-async function deliverPendingHandoff() {
+async function preparePendingHandoff(preferences, expectedUrl) {
+  // Selecting DevSpace can change the active model on a fresh chat, while
+  // opening the model picker can in turn disturb the selected plugin. Require
+  // both states to be valid at the same time before a handoff is submitted.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!devSpaceSelected() && !await enableDevSpace()) {
+      lastPromptFailureReason = 'plugin-selection-lost';
+      return false;
+    }
+    if (!sameConversation(expectedUrl)) {
+      lastPromptFailureReason = 'conversation-changed';
+      return false;
+    }
+    if (!await ensureModelPreferences(preferences, true)) {
+      lastPromptFailureReason = 'model-preference';
+      return false;
+    }
+    if (devSpaceSelected()) return true;
+  }
+  lastPromptFailureReason = 'plugin-selection-lost';
+  return false;
+}
+
+async function deliverPendingHandoff(preferences) {
   if (hasBlockingUi()) return;
   const expectedUrl = location.href;
   const result = await sendRuntime({ type: "getPendingHandoff" });
@@ -1494,8 +1517,9 @@ async function deliverPendingHandoff() {
     }
     return;
   }
-  if (!await enableDevSpace()) {
-    await sendRuntime({ type: "commandResult", action: "enableDevSpace", ok: false, url: location.href });
+  if (!await preparePendingHandoff(preferences, expectedUrl)) {
+    await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
+      reason: lastPromptFailureReason, url: location.href });
     return;
   }
   if (!sameConversation(expectedUrl)) return;
@@ -1571,8 +1595,8 @@ async function scan() {
 
     if (!isConversationPage() || tabRole.pendingDelivery) {
       resetExtendedThinking("monitor-reset");
-      if (!isGenerating() && !await ensureModelPreferences(tabRole)) return;
-      await deliverPendingHandoff();
+      if (isGenerating()) return;
+      await deliverPendingHandoff(tabRole);
       return;
     }
 
