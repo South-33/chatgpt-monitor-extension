@@ -24,6 +24,9 @@ const GOAL_CONTRACT =
 const CONTINUE_TERMINAL_NOTE =
   "If the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.";
 
+const AUTOMATION_NOTE =
+  "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
+
 const BLOCKED_REVIEW_PROMPT =
   "Before stopping, reconsider the blocker against the ORIGINAL user's goal and constraints. Identify what specifically prevents progress. Check for a reasonable, safe, authorized alternative that would advance the same goal without user action; if one exists, try it and verify the outcome. Do not invent a new goal, repeat a failed step without new evidence, bypass permissions, or claim success without verification. If useful work on the original goal can continue, do it and omit the terminal markers. If the goal is fully complete and verified, end with TASK_FINISHED on its own final line. If no viable authorized next step remains and user action is genuinely required, explain exactly what is needed and end with TASK_BLOCKED on its own final line. This is the single reconsideration request; do not request another review.";
 
@@ -36,6 +39,9 @@ function customContinueText(text) {
   let cleaned = String(text || "").trim()
     .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
     .trim();
+  if (cleaned.startsWith(AUTOMATION_NOTE)) {
+    cleaned = cleaned.slice(AUTOMATION_NOTE.length).trim();
+  }
   if (cleaned.startsWith(LEGACY_AUTOMATION_NOTE)) {
     cleaned = cleaned.slice(LEGACY_AUTOMATION_NOTE.length).trim();
   }
@@ -63,9 +69,12 @@ function varySpacing(text) {
 
 function isShortContinuePrompt(prompt) {
   const text = String(prompt || "").trim();
-  const withoutLegacyNote = text.startsWith(LEGACY_AUTOMATION_NOTE)
-    ? text.slice(LEGACY_AUTOMATION_NOTE.length).trim()
+  const withoutCurrentNote = text.startsWith(AUTOMATION_NOTE)
+    ? text.slice(AUTOMATION_NOTE.length).trim()
     : text;
+  const withoutLegacyNote = withoutCurrentNote.startsWith(LEGACY_AUTOMATION_NOTE)
+    ? withoutCurrentNote.slice(LEGACY_AUTOMATION_NOTE.length).trim()
+    : withoutCurrentNote;
   const body = withoutLegacyNote.endsWith(CONTINUE_TERMINAL_NOTE)
     ? withoutLegacyNote.slice(0, -CONTINUE_TERMINAL_NOTE.length).trim()
     : withoutLegacyNote;
@@ -74,9 +83,10 @@ function isShortContinuePrompt(prompt) {
 
 function continuationPrompt(text) {
   const body = String(text || "").trim();
-  if (!body) return CONTINUE_TERMINAL_NOTE;
-  if (/\bTASK_FINISHED\b/.test(body) && /\bTASK_BLOCKED\b/.test(body)) return body;
-  return `${body}\n\n${CONTINUE_TERMINAL_NOTE}`;
+  const terminal = /\bTASK_FINISHED\b/.test(body) && /\bTASK_BLOCKED\b/.test(body)
+    ? ""
+    : `\n\n${CONTINUE_TERMINAL_NOTE}`;
+  return `${AUTOMATION_NOTE}\n\n${body || "continue"}${terminal}`;
 }
 
 function sameSubmittedPrompt(actual, expected) {

@@ -242,7 +242,7 @@ function send(message, sender = {}) {
     "Resume uses this tab's selected preset");
   assert.match(resumed.prompt, /TASK_FINISHED/);
   assert.match(resumed.prompt, /TASK_BLOCKED/);
-  assert.doesNotMatch(resumed.prompt, /Automated continuation of the original user task/);
+  assert.match(resumed.prompt, /^This is an automated continuation message and may be sent repeatedly\./);
   assert.doesNotMatch(resumed.prompt, /Completion contract:/);
   const repeatedResume = await send({ type: "setPaused", tabId: 9, paused: false });
   assert.equal(repeatedResume.ok, true);
