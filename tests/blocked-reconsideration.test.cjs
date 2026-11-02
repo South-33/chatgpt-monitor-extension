@@ -98,21 +98,26 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   const resumed = await restarted(status('review-answer',
     'I found an authorized method to complete the requested validation. I tested the method.', first.prompt));
   assert.equal(resumed.action, 'sendContinue');
-  assert.equal(local.runtime.states[64].blockedReviewAttempted, true,
-    'only one automatic reconsideration per conversation, even after continuing');
+  assert.equal(local.runtime.states[64].blockedReviewAttempted, false,
+    'a successful reconsideration resets the budget for a later blocked episode');
   await restarted({ type: 'commandResult', action: 'sendContinue', ok: true, url });
 
-  // Another genuine block in this conversation now pauses. No infinite loops.
-  assert.equal((await restarted(status('later-block', blocked, 'Previously submitted continuation'))).action, undefined);
+  // A later genuine block after more work is a new episode and gets exactly
+  // one reconsideration. If that reconsideration is also blocked, stop.
+  const laterReview = await restarted(status('later-block', blocked, 'Previously submitted continuation'));
+  assert.equal(laterReview.action, 'sendBlockedReview');
+  assert.equal(local.runtime.states[64].blockedReviewAttempted, true);
+  await restarted({ type: 'commandResult', action: 'sendBlockedReview', ok: true, url });
+  assert.equal((await restarted(status('later-review-blocked', blocked, laterReview.prompt))).action, undefined);
   assert.equal(local.runtime.states[64].taskStatus, 'blocked');
   assert.equal(local.runtime.states[64].paused, true);
-  assert.equal((await restarted(status('later-block', blocked, 'Previously submitted continuation'))).action, undefined);
+  assert.equal((await restarted(status('later-review-blocked', blocked, laterReview.prompt))).action, undefined);
 
   // Explicit Resume starts a fresh authorized attempt; terminal marker from
   // the old turn does not trigger another immediate reconsideration.
   await restarted({ type: 'setPaused', tabId: 64, paused: false });
   assert.equal(local.runtime.states[64].blockedReviewAttempted, false);
-  const manual = await restarted(status('later-block', blocked, '', true));
+  const manual = await restarted(status('later-review-blocked', blocked, '', true));
   assert.equal(manual.action, 'sendContinue');
 
   // A new conversation has a separate reconsideration budget.

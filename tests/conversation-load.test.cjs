@@ -41,7 +41,7 @@ vm.runInNewContext(src.slice(src.indexOf('function conversationLoadRetryButton')
   generating = false;
   card.closest = () => ({});
   assert.equal(context.conversationLoadRetryButton(), null, 'ignore errors quoted in chat');
-  assert.ok(src.indexOf('if (tabRole.paused) { resetExtendedThinking(); return; }')
-    < src.indexOf('if (await recoverConversationLoad()) { resetExtendedThinking(); return; }'));
+  assert.ok(src.indexOf('if (tabRole.paused) { resetExtendedThinking("monitor-reset"); return; }')
+    < src.indexOf('if (await recoverConversationLoad()) { resetExtendedThinking("monitor-reset"); return; }'));
   console.log('conversation_load_recovery_ok');
 })().catch(e => { console.error(e); process.exitCode = 1; });

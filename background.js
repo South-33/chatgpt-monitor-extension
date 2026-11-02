@@ -21,15 +21,31 @@ const DEFAULT_SETTINGS = {
 const GOAL_CONTRACT =
   "Completion contract: Work only toward the original user's goal and constraints. Complete useful, authorized steps and verify results; do not invent extra work. When the original goal is complete and verified, end with TASK_FINISHED on a line by itself. If you cannot proceed without user action after checking reasonable alternatives, explain the blocker and end with TASK_BLOCKED on a line by itself. Otherwise use neither marker and keep working on the original goal.";
 
+const CONTINUE_TERMINAL_NOTE =
+  "If the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.";
+
 const BLOCKED_REVIEW_PROMPT =
   "Before stopping, reconsider the blocker against the ORIGINAL user's goal and constraints. Identify what specifically prevents progress. Check for a reasonable, safe, authorized alternative that would advance the same goal without user action; if one exists, try it and verify the outcome. Do not invent a new goal, repeat a failed step without new evidence, bypass permissions, or claim success without verification. If useful work on the original goal can continue, do it and omit the terminal markers. If the goal is fully complete and verified, end with TASK_FINISHED on its own final line. If no viable authorized next step remains and user action is genuinely required, explain exactly what is needed and end with TASK_BLOCKED on its own final line. This is the single reconsideration request; do not request another review.";
 
 const SHORT_CONTINUES = ["continue", "keep going"];
-const AUTOMATION_NOTE = "Automated continuation of the original user task. Keep the user's goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.";
+const LEGACY_AUTOMATION_NOTE = "Automated continuation of the original user task. Keep the user's goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.";
 
 function customContinueText(text) {
-  // Remove only the user's explicit automation preamble; preserve task notes.
-  return String(text || "").trim().replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '').trim();
+  // Preserve the user's task notes, but remove wrappers produced by older
+  // monitor versions if a generated prompt was pasted back into a preset.
+  let cleaned = String(text || "").trim()
+    .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
+    .trim();
+  if (cleaned.startsWith(LEGACY_AUTOMATION_NOTE)) {
+    cleaned = cleaned.slice(LEGACY_AUTOMATION_NOTE.length).trim();
+  }
+  if (cleaned.endsWith(GOAL_CONTRACT)) {
+    cleaned = cleaned.slice(0, -GOAL_CONTRACT.length).trim();
+  }
+  if (cleaned.endsWith(CONTINUE_TERMINAL_NOTE)) {
+    cleaned = cleaned.slice(0, -CONTINUE_TERMINAL_NOTE.length).trim();
+  }
+  return cleaned;
 }
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
 const HANDOFF_OPENERS = [
@@ -47,8 +63,20 @@ function varySpacing(text) {
 
 function isShortContinuePrompt(prompt) {
   const text = String(prompt || "").trim();
-  const body = text.startsWith(AUTOMATION_NOTE) ? text.slice(AUTOMATION_NOTE.length).trim() : text;
+  const withoutLegacyNote = text.startsWith(LEGACY_AUTOMATION_NOTE)
+    ? text.slice(LEGACY_AUTOMATION_NOTE.length).trim()
+    : text;
+  const body = withoutLegacyNote.endsWith(CONTINUE_TERMINAL_NOTE)
+    ? withoutLegacyNote.slice(0, -CONTINUE_TERMINAL_NOTE.length).trim()
+    : withoutLegacyNote;
   return SHORT_CONTINUES.includes(body.replace(/\s+/g, " ").toLowerCase());
+}
+
+function continuationPrompt(text) {
+  const body = String(text || "").trim();
+  if (!body) return CONTINUE_TERMINAL_NOTE;
+  if (/\bTASK_FINISHED\b/.test(body) && /\bTASK_BLOCKED\b/.test(body)) return body;
+  return `${body}\n\n${CONTINUE_TERMINAL_NOTE}`;
 }
 
 function sameSubmittedPrompt(actual, expected) {
@@ -106,6 +134,13 @@ const DIAGNOSTIC_EVENTS = new Set([
   "heartbeat",
 ]);
 const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "handoff", "blocked-review", "none"]);
+const CONTENT_DIAGNOSTIC_REASONS = new Set([
+  "timer-started", "notice-or-generation-ended", "notice-disappeared", "generation-ended", "monitor-reset",
+  "configured-limit", "ten-minute-limit",
+  "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
+  "devspace", "permission-card", "conversation-scope",
+  "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
+]);
 let diagnosticWrites = Promise.resolve();
 let settingsWrites = Promise.resolve();
 let runtimeWrites = Promise.resolve();
@@ -147,12 +182,9 @@ function recordDiagnostic(event, details = {}) {
     ]),
     promptMode: DIAGNOSTIC_PROMPT_MODES,
     reason: new Set([
-      "timer-started", "notice-or-generation-ended", "configured-limit", "ten-minute-limit",
-      "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
+      ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
       "unreadable-check-in",
-      "devspace", "permission-card", "conversation-scope",
-      "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
       "model-preference", "conversation-changed", "composer-changed",
@@ -254,7 +286,8 @@ async function initialize() {
     delete state.useSavedGoal;
     delete state.blockReviewSent;
     delete state.handoffWasBlocked;
-    // Keep the one-time review flag and its pending phase across worker restarts.
+    // Keep the current blocked episode's review flag and pending phase across
+    // worker restarts. It resets only after reconsideration finds a path forward.
     state.blockedReviewAttempted = state.blockedReviewAttempted === true
       || ["sending-block-review", "waiting-for-block-review"].includes(state.phase);
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
@@ -494,7 +527,7 @@ function requestContinue(state, prompt, source = "automatic") {
     const custom = customContinueText(continuePromptForTab(state.tabId));
     const useCustom = custom !== state.lastCustomContinue || !(state.genericContinuesRemaining > 0);
     state.pendingNormalContinue = { custom, useCustom };
-    prompt = `${AUTOMATION_NOTE}\n\n${useCustom ? addGoalContract(custom) : 'continue'}`;
+    prompt = continuationPrompt(useCustom ? custom : "continue");
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
@@ -838,8 +871,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.paused = paused;
       if (!paused && (state.resumeContinuePending || state.taskStatus === "finished" || state.taskStatus === "blocked")) {
         state.taskStatus = "ongoing";
-        // A deliberate user Resume starts a new attempt; otherwise a blocked
-        // conversation gets at most one automated reconsideration.
+        // A deliberate user Resume starts a new blocked episode budget.
         state.blockedReviewAttempted = false;
         state.resumeContinuePending = true;
         state.resumePhase = null;
@@ -1038,16 +1070,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "diagnosticEvent") {
-      const allowedReasons = new Set([
-        "timer-started", "notice-or-generation-ended", "configured-limit", "ten-minute-limit",
-        "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
-        "devspace", "permission-card", "conversation-scope",
-        "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
-      ]);
       if (targetMatches(tabId)
           && DIAGNOSTIC_EVENTS.has(message.event)
           && (message.event.startsWith("watchdog-") || message.event.startsWith("approval_"))
-          && allowedReasons.has(message.reason)) {
+          && CONTENT_DIAGNOSTIC_REASONS.has(message.reason)) {
         await recordDiagnostic(message.event, {
           tabId,
           reason: message.reason,
@@ -1600,7 +1626,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void recordDiagnostic("recovery-check-completed", { tabId });
       state.recoveryCheckPrompt = "";
     }
-    if (state.phase === "waiting-for-block-review") state.phase = "watching";
+    if (state.phase === "waiting-for-block-review") {
+      // This reconsideration found a path forward. A later, genuinely new
+      // blocked completion is a new episode and gets one fresh reconsideration.
+      state.phase = "watching";
+      state.blockedReviewAttempted = false;
+    }
     if (handoffInProgress(state)) {
       const result = completedHandoffAction(state, message.latestResponseText, message.latestResponseIsSubstantive);
       await persistRuntime();

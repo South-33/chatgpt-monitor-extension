@@ -46,7 +46,11 @@ function worker() {
       responseKey: `reply-${tabId}`, latestResponseText: 'More work remains.',
     }, { tab: { id: tabId, url } });
     assert.equal(action.action, 'sendContinue');
-    assert.ok(action.prompt.includes(`\n\nWork on task ${tabId} only.\n\n`));
+    assert.ok(action.prompt.startsWith(`Work on task ${tabId} only.\n\n`));
+    assert.equal(action.prompt.includes('Automated continuation of the original user task.'), false,
+      'custom prompts are not wrapped in a second automation preamble');
+    assert.equal(action.prompt.includes('Completion contract:'), false,
+      'custom prompts use only the compact terminal note');
     await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url }, { tab: { id: tabId, url } });
   }
   assert.equal((await harness.send({ type: 'isTargetTab' }, { tab: { id: 5 } })).target, false,
@@ -57,7 +61,7 @@ function worker() {
   const continuation = key => harness.send({ type: 'status', url: cycleUrl, isGenerating: false,
     responseKey: key, latestResponseText: 'More work remains.' }, cycleSender);
   const generic1 = await continuation('cycle-generic-1');
-  assert.ok(generic1.prompt.endsWith('\n\ncontinue'));
+  assert.ok(generic1.prompt.startsWith('continue\n\n'));
   assert.match(generic1.prompt, /TASK_FINISHED/, 'even short turns must have a clear completion signal');
   assert.match(generic1.prompt, /TASK_BLOCKED/, 'even short turns must have a clear blocked signal');
   assert.equal(generic1.prompt.includes('Completion contract:'), false,
@@ -67,7 +71,7 @@ function worker() {
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   harness = worker();
   const generic2 = await continuation('cycle-generic-2');
-  assert.ok(generic2.prompt.endsWith('\n\ncontinue'), 'the cycle survives worker restarts');
+  assert.ok(generic2.prompt.startsWith('continue\n\n'), 'the cycle survives worker restarts');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   const customAgain = await continuation('cycle-custom-again');
   assert.ok(customAgain.prompt.includes('Work on task 2 only.'));
@@ -88,6 +92,10 @@ function worker() {
     'this is a automated system message((user may include alot of prompting in this system message and it might be sent too often. so reason well in ur context to know when or when not to care for these extra notes/messages).\n\nWork on task 2 only.' });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
     'remove the duplicated automation preamble while preserving the custom task notes');
+  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text:
+    'Automated continuation of the original user task. Keep the user\'s goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.\n\nWork on task 2 only.\n\nCompletion contract: Work only toward the original user\'s goal and constraints. Complete useful, authorized steps and verify results; do not invent extra work. When the original goal is complete and verified, end with TASK_FINISHED on a line by itself. If you cannot proceed without user action after checking reasonable alternatives, explain the blocker and end with TASK_BLOCKED on a line by itself. Otherwise use neither marker and keep working on the original goal.' });
+  assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
+    'legacy generated wrappers are stripped when pasted back into a preset');
   await harness.send({ type: 'setMonitoring', enabled: false, tabId: 1 });
   assert.equal((await harness.send({ type: 'isTargetTab' }, { tab: { id: 1 } })).target, false);
   for (const tabId of [2, 3, 4]) {

@@ -13,6 +13,7 @@ let generating = true;
 let statuses = [];
 let turns = [];
 const publishedTimers = [];
+const diagnostics = [];
 let lastPublishedTimer;
 const sandbox = {
   Date: { now: () => now },
@@ -25,7 +26,7 @@ const sandbox = {
 
   visible: (element) => !element.hidden,
   normalizedControlText: (text) => (text || "").replace(/\s+/g, " ").trim(),
-  reportDiagnostic: () => {},
+  reportDiagnostic: (event, reason) => diagnostics.push({ event, reason }),
   publishThinkingNoticeTimer: (startedAt) => {
     if (lastPublishedTimer !== startedAt) {
       lastPublishedTimer = startedAt;
@@ -119,8 +120,12 @@ assert.equal(sandbox.isExtendedThinkingTimedOut(), false,
   "an unrelated status without a systems-thinking cue does not match");
 
 statuses = [status("Our systems are thinking a bit more before responding.", nextAssistant)];
+assert.equal(sandbox.isExtendedThinkingTimedOut(), false,
+  "a matching notice can start a fresh timer after a non-matching status cleared the prior one");
 generating = false;
 assert.equal(sandbox.isExtendedThinkingTimedOut(), false, "the status is ignored when Stop is absent");
+assert.deepEqual(diagnostics.at(-1), { event: 'watchdog-reset', reason: 'generation-ended' },
+  'generation ending clears the watchdog without treating it as a notice-only disappearance');
 generating = true;
 now += 10 * 60 * 1000;
 assert.equal(sandbox.isExtendedThinkingTimedOut(), false,
@@ -130,6 +135,8 @@ assert.equal(sandbox.isExtendedThinkingTimedOut(), true, "a new active run gets 
 statuses = [];
 assert.equal(sandbox.isExtendedThinkingTimedOut(), false, "removing the transient status resets the timer");
 assert.equal(publishedTimers.at(-1), null, "clear the popup timer when the notice disappears");
+assert.deepEqual(diagnostics.at(-1), { event: 'watchdog-reset', reason: 'notice-disappeared' },
+  'notice disappearance while Stop is still visible only clears the watchdog');
 
 statuses = [status(exactNotice, nextAssistant)];
 assert.equal(sandbox.isExtendedThinkingTimedOut(), false,

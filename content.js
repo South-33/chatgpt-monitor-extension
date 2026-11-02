@@ -518,8 +518,10 @@ function extendedThinkingStatus() {
     .at(-1) || null;
 }
 
-function resetExtendedThinking() {
-  if (extendedThinkingTurnIdentity) reportDiagnostic("watchdog-reset", "notice-or-generation-ended");
+function resetExtendedThinking(reason = null) {
+  if (extendedThinkingTurnIdentity) {
+    reportDiagnostic("watchdog-reset", reason || (isGenerating() ? "notice-disappeared" : "generation-ended"));
+  }
   publishThinkingNoticeTimer(null);
   extendedThinkingTurnIdentity = null;
   extendedThinkingSince = 0;
@@ -536,7 +538,7 @@ function extendedThinkingTimedOut() {
   const turn = statusMatch?.turn || null;
   const noticeVisible = Boolean(generating && statusMatch && turn);
   if (!noticeVisible) {
-    resetExtendedThinking();
+    resetExtendedThinking(generating ? "notice-disappeared" : "generation-ended");
     return false;
   }
 
@@ -629,7 +631,6 @@ async function recoverExtendedThinking() {
   reportDiagnostic("watchdog-stop-confirmed", "stop-control-disappeared");
   await new Promise((resolve) => setTimeout(resolve, 500));
   if (!sameConversation(expectedUrl)) return true;
-  if (terminalMarker(captureResponse().text)) return false;
   const action = await sendRuntime({ type: "extendedThinkingRecoveryReady", url: location.href });
   if (action?.action && sameConversation(expectedUrl)) await handleAction(action);
   return true;
@@ -1558,18 +1559,18 @@ async function scan() {
       return;
     }
 
-    if (tabRole.paused) { resetExtendedThinking(); return; }
-    if (await recoverConversationLoad()) { resetExtendedThinking(); return; }
+    if (tabRole.paused) { resetExtendedThinking("monitor-reset"); return; }
+    if (await recoverConversationLoad()) { resetExtendedThinking("monitor-reset"); return; }
     if (isConversationPage() && followLatestConversation()) {
       // Allow virtualized content to render before detecting approvals or
       // deciding the turn finished. This runs only when the pane moved.
       scheduleScan();
       return;
     }
-    if (await resolveDevSpaceMaterialization()) { resetExtendedThinking(); return; }
+    if (await resolveDevSpaceMaterialization()) { resetExtendedThinking("monitor-reset"); return; }
 
     if (!isConversationPage() || tabRole.pendingDelivery) {
-      resetExtendedThinking();
+      resetExtendedThinking("monitor-reset");
       if (!isGenerating() && !await ensureModelPreferences(tabRole)) return;
       await deliverPendingHandoff();
       return;

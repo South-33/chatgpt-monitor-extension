@@ -240,7 +240,10 @@ function send(message, sender = {}) {
   assert.equal(resumed.action, "sendContinue", "Resume posts the selected continuation, ignoring the stale marker");
   assert.ok(resumed.prompt.includes(local.settings.continuePresets[local.settings.tabContinuePresets[9]?.index ?? 0]),
     "Resume uses this tab's selected preset");
-  assert.match(resumed.prompt, /Completion contract/);
+  assert.match(resumed.prompt, /TASK_FINISHED/);
+  assert.match(resumed.prompt, /TASK_BLOCKED/);
+  assert.doesNotMatch(resumed.prompt, /Automated continuation of the original user task/);
+  assert.doesNotMatch(resumed.prompt, /Completion contract:/);
   const repeatedResume = await send({ type: "setPaused", tabId: 9, paused: false });
   assert.equal(repeatedResume.ok, true);
   const repeatedScan = await send({ type: "status", url: blockedTab.tab.url,
@@ -642,9 +645,14 @@ function send(message, sender = {}) {
   assert.equal(thinkingStatus.extendedThinkingLimitMs, 10 * 60 * 1000);
   await send({ type: "diagnosticEvent", event: "watchdog-timeout",
     reason: "configured-limit", elapsedMs: 600000 }, longThinkingTab);
+  await send({ type: "diagnosticEvent", event: "watchdog-reset",
+    reason: "notice-disappeared" }, longThinkingTab);
   assert.ok((await send({ type: "getDiagnostics" })).events.some((entry) =>
     entry.event === "watchdog-timeout" && entry.reason === "configured-limit"),
   "the configured watchdog limit is recorded in diagnostics");
+  assert.ok((await send({ type: "getDiagnostics" })).events.some((entry) =>
+    entry.event === "watchdog-reset" && entry.reason === "notice-disappeared"),
+  "notice-only watchdog resets are preserved in diagnostics");
   await send({ type: "thinkingNoticeTimer", url: longThinkingTab.tab.url, startedAt: null }, longThinkingTab);
   thinkingStatus = await send({
     type: "getMonitorStatus",
@@ -715,8 +723,9 @@ function send(message, sender = {}) {
     recoveryKey: "stale-interruption-banner",
     latestUserText: plainRecovery.prompt, composerEmpty: true }, longThinkingTab);
   assert.equal(afterCheckIn.action, "sendContinue");
-  assert.match(afterCheckIn.prompt, /Completion contract:/,
-    "the check-in reply is followed by the configured continuation");
+  assert.match(afterCheckIn.prompt, /TASK_FINISHED/,
+    "the check-in reply is followed by the configured continuation with a compact terminal signal");
+  assert.doesNotMatch(afterCheckIn.prompt, /Completion contract:/);
   assert.ok((await send({ type: "getDiagnostics" })).events.some((entry) =>
     entry.event === "recovery-check-completed" && entry.tabId === 30));
 
