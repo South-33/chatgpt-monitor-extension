@@ -5,8 +5,9 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
 const composerHelpers = source.slice(source.indexOf('function normalizedText('), source.indexOf('async function clearComposer('));
-const sendSource = source.slice(source.indexOf('async function sendPrompt('), source.indexOf('async function sendPromptWithRetry('));
-const deliverySource = source.slice(source.indexOf('async function preparePendingHandoff('), source.indexOf('function conversationLoadRetryButton('));
+const sendSource = source.slice(source.indexOf('async function sendPrompt('), source.indexOf('async function manualSwap('));
+const submitSource = source.slice(source.indexOf('async function submitComposer('), source.indexOf('function modelPickerTrigger('));
+const deliverySource = source.slice(source.indexOf('async function deliverPendingHandoff('), source.indexOf('function conversationLoadRetryButton('));
 
 const textNode = value => ({ nodeType: 3, textContent: value });
 const mention = {
@@ -33,11 +34,12 @@ function editor(initialDraft = '') {
 
 const prompt = 'Another agent worked on this original task. Continue using the verified evidence.';
 
-async function scenario(initialDraft = '', pluginPresent = true) {
+async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true } = {}) {
   const composer = editor(initialDraft);
   let inserted = 0;
   let sendAttempts = 0;
-  let forcedVerification;
+  const verifications = [];
+  let cleared = 0;
   const context = {
     Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
     window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) },
@@ -56,29 +58,37 @@ async function scenario(initialDraft = '', pluginPresent = true) {
     stopped: false,
     lastPromptFailureReason: 'unknown',
     sendRuntime: async () => ({ target: true, paused: false, preferredModel: 'GPT-6' }),
-    isGenerating: () => false,
+    isGenerating: () => sendAttempts > 0,
     hasBlockingUi: () => false,
     sameConversation: () => true,
     visible: () => true,
     findComposer: () => composer,
+    findSendButton: () => ({ ready: inserted > 0 || initialDraft === prompt }),
+    sendButtonReady: button => button.ready,
     waitFor: async predicate => Boolean(predicate()),
-    ensureModelPreferences: async (_preferences, force) => { forcedVerification = force; return true; },
-    devSpaceSelected: () => pluginPresent,
-    submitComposer: async () => { sendAttempts++; return true; },
+    ensureModelPreferences: async (_preferences, force) => {
+      assert.equal(context.composerText(composer), prompt,
+        'verify the model after the draft has reached the composer');
+      verifications.push(force);
+      if (!modelKeepsPlugin) pluginPresent = false;
+      return modelOk;
+    },
+    pluginSelected: () => pluginPresent,
+    HTMLButtonElement: class { click() { sendAttempts++; } },
+    clearComposer: async () => { cleared++; },
   };
-  vm.runInNewContext(`${composerHelpers}\n${sendSource}`, context);
+  vm.runInNewContext(`${composerHelpers}\n${submitSource}\n${sendSource}`, context);
   assert.equal(context.composerText(composer), initialDraft,
     'selected spacedev mention must not count as an unsent draft');
   const delivered = await context.sendPrompt(prompt, true);
-  return { context, composer, delivered, inserted, sendAttempts, forcedVerification };
+  return { context, composer, delivered, inserted, sendAttempts, verifications, cleared };
 }
 
-async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}) {
+async function deliveryScenario() {
   const events = [];
   let pluginSelected = false;
   let delivered = false;
   const prompt = 'Relay the captured handoff into this fresh chat.';
-  const preferences = { preferredModel: 'GPT-5.6 Sol', preferredReasoning: 'high' };
   const context = {
     location: { href: 'https://chatgpt.com/' },
     lastPromptFailureReason: 'unknown',
@@ -86,15 +96,10 @@ async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}
     sameConversation: () => true,
     isConversationPage: () => false,
     latestUserMatchesPrompt: () => false,
-    devSpaceSelected: () => pluginSelected,
-    enableDevSpace: async () => { events.push('devspace'); pluginSelected = true; return true; },
-    ensureModelPreferences: async (_preferences, force) => {
-      events.push(`model:${force}`);
-      if (!modelKeepsPlugin) pluginSelected = false;
-      return modelOk;
-    },
-    sendPromptWithRetry: async (_prompt, requireDevSpace) => {
-      events.push(`send:${requireDevSpace}`);
+    pluginSelected: () => pluginSelected,
+    selectConfiguredPlugin: async () => { events.push('plugin'); pluginSelected = true; return true; },
+    sendPrompt: async (_prompt, requirePlugin) => {
+      events.push(`send:${requirePlugin}`);
       delivered = true;
       return true;
     },
@@ -106,7 +111,7 @@ async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}
     },
   };
   vm.runInNewContext(deliverySource, context);
-  await context.deliverPendingHandoff(preferences);
+  await context.deliverPendingHandoff();
   return { events, delivered, reason: context.lastPromptFailureReason };
 }
 
@@ -115,8 +120,8 @@ async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}
   assert.equal(clean.delivered, true, 'plugin-only editor accepts a handoff');
   assert.equal(clean.inserted, 1);
   assert.equal(clean.sendAttempts, 1);
-  assert.equal(clean.forcedVerification, undefined,
-    'sending reuses valid model verification instead of forcing a second model-menu click');
+  assert.deepEqual(clean.verifications, [true],
+    'fresh handoff opens the picker once, immediately before send');
   assert.equal(clean.context.composerText(clean.composer), prompt,
     'handoff is inserted after and independently of the plugin mention');
   assert.strictEqual(clean.composer.childNodes[0].childNodes[0], mention,
@@ -130,24 +135,22 @@ async function deliveryScenario({ modelOk = true, modelKeepsPlugin = true } = {}
 
   const missingPlugin = await scenario('', false);
   assert.equal(missingPlugin.delivered, false,
-    'handoff must not be submitted without its selected DevSpace attachment');
+    'handoff must not be submitted without its selected plugin');
   assert.equal(missingPlugin.inserted, 0);
   assert.equal(missingPlugin.context.lastPromptFailureReason, 'plugin-selection-lost');
 
   const fresh = await deliveryScenario();
-  assert.deepEqual(fresh.events, ['devspace', 'model:true', 'send:true', 'delivered'],
-    'fresh handoff selects DevSpace, then force-verifies the model before sending');
+  assert.deepEqual(fresh.events, ['plugin', 'send:true', 'delivered']);
   assert.equal(fresh.delivered, true);
 
-  const modelFailure = await deliveryScenario({ modelOk: false });
-  assert.deepEqual(modelFailure.events, ['devspace', 'model:true', 'failed:model-preference']);
+  const modelFailure = await scenario('', true, { modelOk: false });
+  assert.equal(modelFailure.context.lastPromptFailureReason, 'model-preference');
   assert.equal(modelFailure.delivered, false, 'handoff must not send when preferred model verification fails');
 
-  const pluginLost = await deliveryScenario({ modelKeepsPlugin: false });
-  assert.deepEqual(pluginLost.events,
-    ['devspace', 'model:true', 'devspace', 'model:true', 'failed:plugin-selection-lost'],
-    'retry the joint state once when model selection drops the plugin');
+  const pluginLost = await scenario('', true, { modelKeepsPlugin: false });
+  assert.equal(pluginLost.context.lastPromptFailureReason, 'plugin-selection-lost');
+  assert.equal(pluginLost.cleared, 1, 'release the handoff draft for the retry');
   assert.equal(pluginLost.delivered, false,
-    'handoff must not send unless preferred model and DevSpace are valid together');
+    'handoff must not send unless preferred model and configured plugin are valid together');
   console.log('handoff_composer_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

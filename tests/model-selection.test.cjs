@@ -68,7 +68,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
       ? { parentElement: { querySelectorAll: () => [trigger] } } : null }),
     normalizedControlText: text => (text || '').replace(/\s+/g, ' ').trim(),
     visible: element => Boolean(element), controlReady: element => Boolean(element && !element.disabled),
-    approvalMenuOpen: () => open, isGenerating: () => generating, hasBlockingUi: () => blocked,
+    controlMenuOpen: () => open, isGenerating: () => generating, hasBlockingUi: () => blocked,
     Date: { now: () => clock },
     KeyboardEvent: class { constructor(type, properties) { this.type = type; Object.assign(this, properties); } },
     waitFor: async predicate => {
@@ -179,7 +179,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), false);
   assert.equal(missing.reports.at(-1).repeated, true, 'repeated errors do not produce noisy logs');
   missing.preferences.preferredModel = 'GPT-5.6 Sol';
-  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), true, 'changing settings bypasses old failure backoff');
+  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), true, 'changing settings bypasses the previous failure backoff');
 
   const interrupted = fixture();
   const click = interrupted.ctx.clickControl;

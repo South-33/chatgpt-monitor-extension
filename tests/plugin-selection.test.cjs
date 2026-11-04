@@ -51,45 +51,45 @@ function scenario({ delayed = 0, current = true, disabled = false, draft = '', c
 
 (async () => {
   const renamed = scenario({ plugin: 'spacedev' });
-  assert.equal(await renamed.context.enableDevSpace(), true, 'fall back to the renamed plugin when the old lookup has no result');
+  assert.equal(await renamed.context.selectConfiguredPlugin(), true, 'fall back to the alternate default plugin spelling');
   assert.equal(renamed.stats().typed, 2);
   assert.equal(renamed.stats().clicks, 1);
-  assert.equal(await renamed.context.enableDevSpace(), true, 'recognize the renamed selected mention');
+  assert.equal(await renamed.context.selectConfiguredPlugin(), true, 'recognize the alternate selected mention');
   assert.equal(renamed.stats().clicks, 1);
   const renamedPartial = scenario({ plugin: 'spacedev', draft: '@space', prefixResult: true, clickAccepts: false });
-  assert.equal(await renamedPartial.context.enableDevSpace(), true, 'renamed partial lookup supports highlighted Enter fallback');
+  assert.equal(await renamedPartial.context.selectConfiguredPlugin(), true, 'alternate partial lookup supports highlighted Enter fallback');
   assert.equal(renamedPartial.stats().typed, 0);
   const slow = scenario({ delayed: 40 });
-  assert.equal(await slow.context.enableDevSpace(), true, 'wait for a late suggestion');
+  assert.equal(await slow.context.selectConfiguredPlugin(), true, 'wait for a late suggestion');
   assert.deepEqual(slow.stats(), { selected: true, text: '', enters: 0, clicks: 1, typed: 1 });
-  assert.equal(await slow.context.enableDevSpace(), true, 'selected inline mention is idempotent');
+  assert.equal(await slow.context.selectConfiguredPlugin(), true, 'selected inline mention is idempotent');
   assert.equal(slow.stats().clicks, 1);
   assert.equal(slow.stats().typed, 1);
 
   const retry = scenario({ draft: '@devspace' });
-  assert.equal(await retry.context.enableDevSpace(), true, 'resume an existing lookup');
+  assert.equal(await retry.context.selectConfiguredPlugin(), true, 'resume an existing lookup');
   assert.equal(retry.stats().typed, 0);
   const visiblePartial = scenario({ draft: '@devspac', prefixResult: true });
-  assert.equal(await visiblePartial.context.enableDevSpace(), true);
+  assert.equal(await visiblePartial.context.selectConfiguredPlugin(), true);
   assert.equal(visiblePartial.stats().typed, 0, 'select an existing suggestion without retyping');
   for (const draft of ['@', '@dev', '@devspac']) {
     const partial = scenario({ draft });
-    assert.equal(await partial.context.enableDevSpace(), true, `repair ${draft}`);
+    assert.equal(await partial.context.selectConfiguredPlugin(), true, `repair ${draft}`);
     assert.equal(partial.stats().typed, 1);
   }
 
   for (const options of [{ current: false, clickAccepts: false }, { disabled: true }, { draft: 'My unsent work' }]) {
     const unsafe = scenario(options);
-    assert.equal(await unsafe.context.enableDevSpace(), false);
+    assert.equal(await unsafe.context.selectConfiguredPlugin(), false);
     assert.equal(unsafe.stats().enters, 0, 'never press Enter without a verified highlighted result');
     if (options.draft) assert.equal(unsafe.stats().text, options.draft);
   }
   const keyboardFallback = scenario({ clickAccepts: false });
-  assert.equal(await keyboardFallback.context.enableDevSpace(), true, 'use Enter only after a failed click on the highlighted result');
+  assert.equal(await keyboardFallback.context.selectConfiguredPlugin(), true, 'use Enter only after a failed click on the highlighted result');
   assert.equal(keyboardFallback.stats().clicks, 1);
   assert.equal(keyboardFallback.stats().enters, 1);
   const rejected = scenario({ clickAccepts: false, enterAccepts: false });
-  assert.equal(await rejected.context.enableDevSpace(), false, 'an event is not proof of selection');
+  assert.equal(await rejected.context.selectConfiguredPlugin(), false, 'an event is not proof of selection');
   assert.equal(rejected.stats().enters, 1, 'no repeated Enter loop');
   assert.equal(rejected.stats().text, '');
 
@@ -99,8 +99,8 @@ function scenario({ delayed = 0, current = true, disabled = false, draft = '', c
   vm.runInNewContext(source.slice(source.indexOf('function normalizedText'), source.indexOf('function validHandoffText')), acknowledgement);
   assert.equal(acknowledgement.latestUserMatchesPrompt(prompt), true, 'selected plugin prefix still acknowledges delivery');
   posted = `@spacedev\n${prompt}`;
-  assert.equal(acknowledgement.latestUserMatchesPrompt(prompt), true, 'renamed plugin prefix acknowledges delivery');
+  assert.equal(acknowledgement.latestUserMatchesPrompt(prompt), true, 'alternate plugin prefix acknowledges delivery');
   posted = 'A different user message';
   assert.equal(acknowledgement.latestUserMatchesPrompt(prompt), false, 'unrelated messages never acknowledge delivery');
-  console.log('DevSpace selection regressions passed');
+  console.log('plugin_selection_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

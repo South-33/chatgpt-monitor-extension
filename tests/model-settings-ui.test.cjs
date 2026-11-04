@@ -16,7 +16,7 @@ assert.match(html, /<option value="GPT-5\.6 Sol">GPT-5\.6 Sol<\/option>/);
   const sent = [];
   const ctx = {
     settingsLoaded: true,
-    pendingModelWrites: 0, modelSaveQueue: Promise.resolve(), savedSettings: null,
+    pendingControlWrites: 0, controlSaveQueue: Promise.resolve(), savedSettings: null,
     preferredModel: { value: 'GPT-6', disabled: false },
     preferredReasoning: { value: 'high', disabled: false },
     enforceModelPreferences: { checked: false },
@@ -25,22 +25,22 @@ assert.match(html, /<option value="GPT-5\.6 Sol">GPT-5\.6 Sol<\/option>/);
   };
   vm.runInNewContext(script.slice(script.indexOf('function updateModelControls()'),
     script.indexOf('function syncSavedSettings(')), ctx);
-  vm.runInNewContext(script.slice(script.indexOf('async function saveModelPreferences()'),
-    script.indexOf('preferredModel.addEventListener(', script.indexOf('async function saveModelPreferences()'))), ctx);
+  vm.runInNewContext(script.slice(script.indexOf('async function saveControlSettings('),
+    script.indexOf('preferredModel.addEventListener(', script.indexOf('async function saveControlSettings('))), ctx);
 
   ctx.updateModelControls();
   assert.equal(ctx.preferredModel.disabled, true);
   assert.equal(ctx.preferredReasoning.disabled, true);
-  await ctx.saveModelPreferences();
+  await ctx.saveControlSettings();
   assert.equal(sent[0].settings.enforceModelPreferences, false);
   assert.equal(sent[0].settings.preferredModel, 'GPT-6',
     'turning automation off retains the preferred model');
-  assert.equal(ctx.pendingModelWrites, 0);
+  assert.equal(ctx.pendingControlWrites, 0);
 
   ctx.enforceModelPreferences.checked = true;
   ctx.updateModelControls();
   assert.equal(ctx.preferredModel.disabled, false);
-  await ctx.saveModelPreferences();
+  await ctx.saveControlSettings();
   assert.equal(sent[1].settings.enforceModelPreferences, true);
   assert.equal(sent[1].settings.preferredReasoning, 'high');
   console.log('model_settings_ui_ok');

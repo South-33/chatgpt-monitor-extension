@@ -43,7 +43,7 @@ async function contentChecks() {
     setComposerText: async () => { written++; return true; },
   };
   const submit = content.slice(content.indexOf('async function submitComposer('), content.indexOf('function modelPickerTrigger('));
-  const send = content.slice(content.indexOf('async function sendPrompt('), content.indexOf('async function sendPromptWithRetry('));
+  const send = content.slice(content.indexOf('async function sendPrompt('), content.indexOf('async function manualSwap('));
   vm.runInNewContext(`${helper}\n${submit}\n${send}`, ctx);
 
   assert.equal(ctx.sameConversation(`${oldUrl}?messageId=abc`), true,

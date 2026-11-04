@@ -150,13 +150,28 @@ function send(message, sender = {}) {
   const continuedTab = { tab: { id: 7, url: "https://chatgpt.com/c/continued" } };
   await send({ type: "historyScanComplete", url: continuedTab.tab.url, workedSeconds: 0 }, continuedTab);
   await send({ type: "status", url: continuedTab.tab.url, isGenerating: true, workedSeconds: 0 }, continuedTab);
-  await send({
+  const finishedReview = await send({
     type: "status",
     url: continuedTab.tab.url,
     isGenerating: false,
     workedSeconds: 0,
     responseKey: "completed-response",
     latestResponseText: "The original goal is verified complete.\n\nTASK_FINISHED",
+  }, continuedTab);
+  assert.equal(finishedReview.action, "sendTerminalReview",
+    "a claimed completion gets one verification pass before stopping");
+  assert.equal(local.runtime.states[7].paused, false);
+  await send({ type: "commandResult", action: "sendTerminalReview", ok: true,
+    url: continuedTab.tab.url }, continuedTab);
+  await send({
+    type: "status",
+    url: continuedTab.tab.url,
+    isGenerating: false,
+    workedSeconds: 0,
+    responseKey: "finished-review-response",
+    latestResponseText: "The original goal is still fully verified.\n\nTASK_FINISHED",
+    latestUserText: finishedReview.prompt,
+    composerEmpty: true,
   }, continuedTab);
 
   const status = await send({ type: "getMonitorStatus", tabId: 7, url: continuedTab.tab.url });
@@ -167,7 +182,7 @@ function send(message, sender = {}) {
   const finishedTime = local.runtime.states[7].trackedSeconds;
   await send({ type: "setPaused", tabId: 7, paused: false });
   const resumedFinished = await send({ type: "status", url: continuedTab.tab.url,
-    isGenerating: false, composerEmpty: true, responseKey: "completed-response",
+    isGenerating: false, composerEmpty: true, responseKey: "finished-review-response",
     latestResponseText: "The original goal is verified complete.\n\nTASK_FINISHED" }, continuedTab);
   assert.equal(resumedFinished.action, "sendContinue", "Resume must work for a finished task too");
   assert.equal(local.runtime.states[7].trackedSeconds, finishedTime);
@@ -190,17 +205,17 @@ function send(message, sender = {}) {
     responseKey: "blocked-response",
     latestResponseText: "No safe work remains because user input is required.\n\nTASK_BLOCKED",
   }, blockedTab);
-  assert.equal(blockedAction.action, "sendBlockedReview", "the first block triggers exactly one reconsideration");
-  assert.match(blockedAction.prompt, /ORIGINAL user's goal/);
-  assert.match(blockedAction.prompt, /Do not invent a new goal/);
-  assert.equal(local.runtime.states[9].blockedReviewAttempted, true);
+  assert.equal(blockedAction.action, "sendTerminalReview", "the first block triggers exactly one reconsideration");
+  assert.match(blockedAction.prompt, /exact blocker/i);
+  assert.match(blockedAction.prompt, /clean and current/i);
+  assert.equal(local.runtime.states[9].terminalReviewAttempted, true);
   assert.equal(local.runtime.states[9].paused, false);
   const repeatedBlock = await send({ type: "status", url: blockedTab.tab.url,
     isGenerating: false, responseKey: "blocked-response",
     latestResponseText: "No safe work remains.\nTASK_BLOCKED",
   }, blockedTab);
   assert.equal(repeatedBlock.action, undefined, "the same blocked response cannot send a second review");
-  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+  await send({ type: "commandResult", action: "sendTerminalReview", ok: true,
     url: blockedTab.tab.url }, blockedTab);
   const unrelatedOldResponse = await send({ type: "status", url: blockedTab.tab.url,
     isGenerating: false, responseKey: "older-response", latestResponseText: "Unrelated reply.",
@@ -251,7 +266,7 @@ function send(message, sender = {}) {
     latestResponseText: "The manual turn ended.\nTASK_BLOCKED" }, blockedTab);
   assert.equal(repeatedScan.action, undefined, "the resumed prompt is requested once");
 
-  // A failed DevSpace selection is held for an explicit retry instead of
+  // A failed plugin selection is held for an explicit retry instead of
   // re-opening and clicking the plugin picker on every content scan.
   await send({ type: "setMonitoring", enabled: true, tabId: 20, url: "https://chatgpt.com/c/handoff-retry" });
   const retryHandoffTab = { tab: { id: 20, url: "https://chatgpt.com/c/handoff-retry" } };
@@ -281,8 +296,9 @@ function send(message, sender = {}) {
   assert.ok((await send({ type: "getPendingHandoff" }, freshRetryTab)).prompt);
   await send({
     type: "commandResult",
-    action: "enableDevSpace",
+    action: "deliverHandoff",
     ok: false,
+    reason: "plugin-selection-lost",
     url: freshRetryTab.tab.url,
   }, freshRetryTab);
   assert.equal((await send({ type: "getPendingHandoff" }, freshRetryTab)).prompt, null);
@@ -293,7 +309,7 @@ function send(message, sender = {}) {
     tabId: 20,
     url: freshRetryTab.tab.url,
   });
-  assert.match(failedDeliveryStatus.issue, /Could not enable DevSpace/);
+  assert.match(failedDeliveryStatus.issue, /configured plugin/i);
   await send({ type: "retryNow", tabId: 20 }, freshRetryTab);
   assert.ok((await send({ type: "getPendingHandoff" }, freshRetryTab)).prompt,
     "Retry must re-enable the pending handoff attempt");
@@ -330,9 +346,9 @@ function send(message, sender = {}) {
     latestResponseText: "User action appears necessary.\n\nTASK_BLOCKED",
     consecutiveBlockedResponses: 1,
   }, blockedAtThresholdTab);
-  assert.equal(blockedAtThresholdAction.action, "sendBlockedReview", "block review takes priority over handoff");
+  assert.equal(blockedAtThresholdAction.action, "sendTerminalReview", "terminal review takes priority over handoff");
   assert.equal(local.runtime.states[19].paused, false);
-  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+  await send({ type: "commandResult", action: "sendTerminalReview", ok: true,
     url: blockedAtThresholdTab.tab.url }, blockedAtThresholdTab);
   const thresholdSecondBlock = await send({ type: "status", url: blockedAtThresholdTab.tab.url,
     isGenerating: false, responseKey: "blocked-at-threshold-review",
@@ -355,8 +371,8 @@ function send(message, sender = {}) {
     terminalStatus: "blocked",
     consecutiveBlockedResponses: 2,
   }, reloadedBlockedTab);
-  assert.equal(reloadedBlockedAction.action, "sendBlockedReview");
-  await send({ type: "commandResult", action: "sendBlockedReview", ok: true,
+  assert.equal(reloadedBlockedAction.action, "sendTerminalReview");
+  await send({ type: "commandResult", action: "sendTerminalReview", ok: true,
     url: reloadedBlockedTab.tab.url }, reloadedBlockedTab);
   const reloadedReview = await send({ type: "status", url: reloadedBlockedTab.tab.url,
     isGenerating: false, responseKey: "reloaded-review-response",
@@ -469,12 +485,6 @@ function send(message, sender = {}) {
 
   await send({ type: "setMonitoring", enabled: true, tabId: 11, url: "https://chatgpt.com/c/continue" });
   const continueTab = { tab: { id: 11, url: "https://chatgpt.com/c/continue" } };
-  await send({
-    type: "saveTaskNote",
-    tabId: 11,
-    url: continueTab.tab.url,
-    taskNote: "Prefer the smallest verified implementation.",
-  });
   await send({ type: "historyScanComplete", url: continueTab.tab.url, workedSeconds: 0 }, continueTab);
   const continueAction = await send({
     type: "status",

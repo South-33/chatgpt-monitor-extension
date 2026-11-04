@@ -15,12 +15,13 @@ const thinkingMinutes = document.querySelector("#thinkingMinutes");
 const preferredModel = document.querySelector("#preferredModel");
 const preferredReasoning = document.querySelector("#preferredReasoning");
 const enforceModelPreferences = document.querySelector("#enforceModelPreferences");
-let pendingModelWrites = 0;
-let modelSaveQueue = Promise.resolve();
+const reviewWorkflow = document.querySelector("#reviewWorkflow");
+const pluginName = document.querySelector("#pluginName");
+let pendingControlWrites = 0;
+let controlSaveQueue = Promise.resolve();
 const chooseLogFolderButton = document.querySelector("#chooseLogFolder");
 const logFolderStatus = document.querySelector("#logFolderStatus");
 const notice = document.querySelector("#notice");
-const version = document.querySelector("#version");
 
 const PHASE_LABELS = {
   watching: "Watching",
@@ -29,8 +30,8 @@ const PHASE_LABELS = {
   "waiting-for-response": "Waiting for response",
   "sending-handoff": "Requesting handoff",
   "waiting-for-handoff": "Waiting for handoff",
-  "sending-block-review": "Rechecking blocker",
-  "waiting-for-block-review": "Waiting for recheck",
+  "sending-terminal-review": "Rechecking stop result",
+  "waiting-for-terminal-review": "Waiting for stop recheck",
   "opening-new-chat": "Opening fresh chat",
   "threshold-waiting": "Handoff due",
 };
@@ -63,25 +64,29 @@ function updateModelControls() {
 function syncSavedSettings(settings) {
   savedSettings = settings;
   if (!settingsLoaded) return;
-  if (!pendingModelWrites) {
+  if (!pendingControlWrites) {
     if (document.activeElement !== preferredModel) preferredModel.value = settings.preferredModel || "";
     preferredReasoning.value = settings.preferredReasoning || "";
     enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
+    reviewWorkflow.checked = settings.reviewWorkflow === true;
     updateModelControls();
   }
   const profile = settings.tabContinuePresets?.[promptTabId];
   const nextPresets = settings.continuePresets;
   const nextIndex = profile?.index ?? 0;
   if (!promptTimer && !pendingPromptWrites && !switchingPreset && !saveFailed
-      && continuePrompt.value.trim() === presets[activePreset]) {
+      && continuePrompt.value === presets[activePreset]) {
     presets = [...nextPresets];
     activePreset = nextIndex;
-    continuePrompt.value = presets[activePreset];
+    if (continuePrompt.value !== presets[activePreset]) continuePrompt.value = presets[activePreset];
     renderPresetButtons();
   }
   if (!thresholdTimer && document.activeElement !== threshold && document.activeElement !== thinkingMinutes) {
     threshold.value = settings.thresholdMinutes;
     thinkingMinutes.value = settings.thinkingMinutes || 10;
+  }
+  if (typeof pluginName !== "undefined" && !thresholdTimer && document.activeElement !== pluginName) {
+    pluginName.value = settings.pluginName || "DevSpace";
   }
 }
 
@@ -220,19 +225,19 @@ function savePrompt() {
   promptTimer = null;
   const index = activePreset;
   const tabId = promptTabId;
-  const text = continuePrompt.value.trim();
-  if (!text) {
+  const text = continuePrompt.value;
+  if (!text.trim()) {
     promptState.textContent = "Prompt cannot be empty";
     return saveQueue;
   }
   presets[index] = text;
   promptState.textContent = "Saving…";
-  saveFailed = false;
   pendingPromptWrites++;
   saveQueue = saveQueue.catch(() => {}).then(async () => {
     const result = await chrome.runtime.sendMessage({ type: "saveContinuePreset", tabId, index, text });
     if (!result?.ok) throw new Error(result?.error || "Could not save prompt");
-    if (activePreset === index && continuePrompt.value.trim() === text) promptState.textContent = "Saved";
+    saveFailed = false;
+    if (activePreset === index && continuePrompt.value === text) promptState.textContent = "";
   }).catch((error) => {
     saveFailed = true;
     promptState.textContent = error.message || "Could not save prompt";
@@ -246,12 +251,14 @@ function savePrompt() {
 async function switchPreset(index) {
   if (switchingPreset || index === activePreset || !presets[index]) return;
   switchingPreset = true;
+  continuePrompt.disabled = true;
   try {
     if (promptTimer) await savePrompt();
     else await saveQueue;
     if (saveFailed) return;
     const result = await chrome.runtime.sendMessage({ type: "saveContinuePreset", tabId: promptTabId, index });
-    if (!result?.ok) { showNotice("Could not switch prompt.", true); return; }
+    if (!result?.ok) throw new Error("Could not switch prompt.");
+    presets = result.settings.continuePresets;
     activePreset = index;
     continuePrompt.value = presets[index];
     promptState.textContent = "";
@@ -259,23 +266,23 @@ async function switchPreset(index) {
   } catch { showNotice("Could not switch prompt.", true); }
   finally {
     switchingPreset = false;
-    if (savedSettings) syncSavedSettings(savedSettings);
+    continuePrompt.disabled = false;
   }
 }
 
 async function saveThreshold() {
   clearTimeout(thresholdTimer);
   thresholdTimer = null;
+  pluginNameTimer = null;
   const minutes = Number(threshold.value);
   const thinking = Number(thinkingMinutes.value);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 720
-      || !Number.isFinite(thinking) || thinking < 1 || thinking > 60) return;
+  const settings = { pluginName: pluginName.value.trim() || "DevSpace" };
+  if (Number.isFinite(minutes) && minutes >= 1 && minutes <= 720) settings.thresholdMinutes = minutes;
+  if (Number.isFinite(thinking) && thinking >= 1 && thinking <= 60) settings.thinkingMinutes = thinking;
   try {
-    await chrome.runtime.sendMessage({ type: "saveSettings", settings: {
-      thresholdMinutes: minutes, thinkingMinutes: thinking,
-    } });
+    await chrome.runtime.sendMessage({ type: "saveSettings", settings });
     await refreshStatus();
-  } catch { showNotice("Could not save timers.", true); }
+  } catch { showNotice("Could not save settings.", true); }
 }
 
 async function loadSettings() {
@@ -288,10 +295,16 @@ async function loadSettings() {
     if (!settings?.continuePresets?.length) throw new Error("Settings unavailable");
     threshold.value = settings.thresholdMinutes;
     thinkingMinutes.value = settings.thinkingMinutes || 10;
+    if (pluginName) {
+      pluginName.value = settings.pluginName || "DevSpace";
+      pluginName.disabled = false;
+    }
     preferredModel.value = settings.preferredModel || "";
     preferredReasoning.value = settings.preferredReasoning || "";
     enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
     enforceModelPreferences.disabled = false;
+    reviewWorkflow.checked = settings.reviewWorkflow === true;
+    reviewWorkflow.disabled = false;
     presets = settings.continuePresets;
     activePreset = settings.continuePresetIndex;
     continuePrompt.value = presets[activePreset];
@@ -312,7 +325,6 @@ async function loadSettings() {
 }
 
 async function load() {
-  version.textContent = `v${chrome.runtime.getManifest().version}`;
   await refreshStatus();
   await loadSettings();
   if (!settingsLoaded) settingsRetryId = setInterval(() => void loadSettings(), 5000);
@@ -363,37 +375,34 @@ continuePrompt.addEventListener("input", () => {
   promptTimer = setTimeout(savePrompt, 350);
 });
 continuePrompt.addEventListener("blur", () => { if (promptTimer) void savePrompt(); });
-threshold.addEventListener("input", () => {
-  clearTimeout(thresholdTimer);
-  thresholdTimer = setTimeout(saveThreshold, 400);
-});
-threshold.addEventListener("change", () => { void saveThreshold(); });
-thinkingMinutes.addEventListener("input", () => {
-  clearTimeout(thresholdTimer);
-  thresholdTimer = setTimeout(saveThreshold, 400);
-});
-thinkingMinutes.addEventListener("change", () => { void saveThreshold(); });
-async function saveModelPreferences() {
-  const settings = {
-    enforceModelPreferences: enforceModelPreferences.checked,
-    preferredModel: preferredModel.value,
-    preferredReasoning: preferredReasoning.value,
-  };
-  pendingModelWrites++;
-  modelSaveQueue = modelSaveQueue.catch(() => {}).then(async () => {
+for (const field of [threshold, thinkingMinutes, pluginName]) {
+  field.addEventListener("input", () => {
+    clearTimeout(thresholdTimer);
+    thresholdTimer = setTimeout(saveThreshold, 400);
+  });
+  field.addEventListener("change", () => { void saveThreshold(); });
+}
+async function saveControlSettings(settings = {
+  enforceModelPreferences: enforceModelPreferences.checked,
+  preferredModel: preferredModel.value,
+  preferredReasoning: preferredReasoning.value,
+}) {
+  pendingControlWrites++;
+  controlSaveQueue = controlSaveQueue.catch(() => {}).then(async () => {
     await chrome.runtime.sendMessage({ type: "saveSettings", settings });
-  }).catch(() => showNotice("Could not save model settings.", true)).finally(() => {
-    pendingModelWrites--;
+  }).catch(() => showNotice("Could not save settings.", true)).finally(() => {
+    pendingControlWrites--;
     if (savedSettings) syncSavedSettings(savedSettings);
   });
-  return modelSaveQueue;
+  return controlSaveQueue;
 }
-preferredModel.addEventListener("change", () => void saveModelPreferences());
-preferredReasoning.addEventListener("change", () => void saveModelPreferences());
+preferredModel.addEventListener("change", () => void saveControlSettings());
+preferredReasoning.addEventListener("change", () => void saveControlSettings());
 enforceModelPreferences.addEventListener("change", () => {
   updateModelControls();
-  void saveModelPreferences();
+  void saveControlSettings();
 });
+reviewWorkflow.addEventListener("change", () => void saveControlSettings({ reviewWorkflow: reviewWorkflow.checked }));
 chooseLogFolderButton.addEventListener("click", async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL("logs.html") });
 });

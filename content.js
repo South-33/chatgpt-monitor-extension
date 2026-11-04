@@ -36,6 +36,7 @@ let modelPreferenceFailure = "";
 let modelPreferenceRetryAt = 0;
 let lastPromptFailureReason = 'unknown';
 const approvalDiagnostics = new WeakMap();
+let configuredPluginName = "DevSpace";
 
 function normalizedControlText(value) {
   return (value || "").replace(/\s+/g, " ").trim();
@@ -50,10 +51,10 @@ function reportDiagnostic(event, reason, elapsedMs) {
   });
 }
 
-function isDevSpaceMaterializationText(value) {
+function isPluginMaterializationText(value) {
   const text = normalizedControlText(value);
   return /allow file materialization\?/i.test(text)
-    && /(?:dev\s*space|spacedev)/i.test(text)
+    && textMentionsConfiguredPlugin(text)
     && /materialize\s+\d+\s+file attachments?/i.test(text);
 }
 
@@ -61,13 +62,13 @@ function isConversationPermissionLabel(value) {
   const label = normalizedControlText(value).toLowerCase();
   return /\ballow\b/.test(label)
     && /\bconversation\b/.test(label)
-    && (/\b(?:devspace|spacedev)\b/.test(label)
+    && (textMentionsConfiguredPlugin(label)
       || /\bfile\b/.test(label)
       || /^(?:always\s+)?allow\s+(?:for\s+)?this\s+conversation$/.test(label))
     && !/\b(?:deny|whole)\b/.test(label);
 }
 
-function hasDevSpaceApprovalControls(element) {
+function hasMaterializationApprovalControls(element) {
   const actions = element.querySelector('[data-testid="tool-action-buttons"]');
   if (!actions || !visible(actions)) return false;
   const labels = [...actions.querySelectorAll("button")]
@@ -80,22 +81,20 @@ function hasDevSpaceApprovalControls(element) {
     && Boolean(materializationScopeMenuButton(element));
 }
 
-const hasToolApprovalControls = hasDevSpaceApprovalControls;
-
-function devSpaceMaterializationDialog() {
+function materializationDialog() {
   // Only file-materialization prompts are safe for this narrow approval flow.
   // Generic tool approval can authorize commands that change local files.
   const surface = [...document.querySelectorAll("[data-codex-approval-surface]")]
     .filter(visible)
-    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
-    .filter(hasDevSpaceApprovalControls)
+    .filter((card) => isPluginMaterializationText(card.innerText || card.textContent || ""))
+    .filter(hasMaterializationApprovalControls)
     .at(-1);
   if (surface) return surface;
 
   const toolCard = [...document.querySelectorAll('[data-testid="tool-approval-card"]')]
     .filter(visible)
-    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
-    .filter(hasDevSpaceApprovalControls)
+    .filter((card) => isPluginMaterializationText(card.innerText || card.textContent || ""))
+    .filter(hasMaterializationApprovalControls)
     .at(-1);
   if (toolCard) return toolCard;
 
@@ -103,14 +102,14 @@ function devSpaceMaterializationDialog() {
     "[role='dialog'], [aria-modal='true'], [data-radix-dialog-content], [data-state='open']",
   )]
     .filter(visible)
-    .filter((card) => isDevSpaceMaterializationText(card.innerText || card.textContent || ""))
-    .filter(hasDevSpaceApprovalControls)
+    .filter((card) => isPluginMaterializationText(card.innerText || card.textContent || ""))
+    .filter(hasMaterializationApprovalControls)
     .at(-1);
   if (explicitDialog) return explicitDialog;
 
   // ChatGPT's materialization card is not guaranteed to expose dialog roles.
   // Anchor on the visible heading text, then walk up to the smallest container
-  // that contains the full DevSpace message plus the Deny/Allow controls.
+  // that contains the full plugin message plus the Deny/Allow controls.
   const marker = [...document.querySelectorAll(
     "h1, h2, h3, h4, h5, h6, [role='heading'], p, span, div",
   )]
@@ -124,7 +123,7 @@ function devSpaceMaterializationDialog() {
   for (let depth = 0; container && depth < 8; depth += 1, container = container.parentElement) {
     if (!visible(container)) continue;
     const text = container.innerText || container.textContent || "";
-    if (isDevSpaceMaterializationText(text) && hasDevSpaceApprovalControls(container)) return container;
+    if (isPluginMaterializationText(text) && hasMaterializationApprovalControls(container)) return container;
   }
   return null;
 }
@@ -171,9 +170,11 @@ function conversationPermissionOption(dialog) {
 function materializationScopeMenuButton(dialog) {
   const actions = dialog.querySelector('[data-testid="tool-action-buttons"]') || dialog;
   const buttons = [...actions.querySelectorAll("button")].filter(visible);
-  const exact = buttons.find((button) => /\bapproval\b.*\b(?:options|permissions)\b|^allow\s+(?:devspace|spacedev)\s+for\s+this\s+conversation$/i.test(
-    button.getAttribute("aria-label") || "",
-  ));
+  const exact = buttons.find((button) => {
+    const label = button.getAttribute("aria-label") || "";
+    return /\bapproval\b.*\b(?:options|permissions)\b/i.test(label)
+      || isConversationPermissionLabel(label);
+  });
   if (exact) return exact;
 
   // ChatGPT renders Allow as a split control: the text button followed by a
@@ -231,7 +232,7 @@ function clickControl(element, { pointerFirst = false } = {}) {
   HTMLElement.prototype.click.call(element);
 }
 
-function materializationMenuOpen(button) {
+function controlMenuOpen(button) {
   return button?.getAttribute("aria-expanded") === "true"
     || button?.getAttribute("data-state") === "open";
 }
@@ -258,7 +259,7 @@ function pendingToolApproval() {
 }
 
 function hasBlockingUi() {
-  return pendingToolApproval() || Boolean(devSpaceMaterializationDialog()) || blockingUiRunning;
+  return pendingToolApproval() || Boolean(materializationDialog()) || blockingUiRunning;
 }
 
 function reportApproval(dialog, event, reason) {
@@ -274,8 +275,8 @@ function reportApproval(dialog, event, reason) {
   if (typeof reportDiagnostic !== "undefined") reportDiagnostic(event, reason);
 }
 
-async function resolveDevSpaceMaterialization() {
-  const dialog = devSpaceMaterializationDialog();
+async function resolveMaterializationPermission() {
+  const dialog = materializationDialog();
   if (!dialog) return false;
   if (blockingUiRunning) return true;
 
@@ -304,13 +305,13 @@ async function resolveDevSpaceMaterialization() {
 
       // The menu may already be open when monitoring attaches. Opening a
       // toggle in that state would close it and make the option disappear.
-      if (!materializationMenuOpen(scopeMenuButton)) {
+      if (!controlMenuOpen(scopeMenuButton)) {
         clickControl(scopeMenuButton, { pointerFirst: true });
         let menuOpened = await waitFor(
           () => Boolean(conversationPermissionOption(dialog)),
           1500,
         );
-        if (!menuOpened && !materializationMenuOpen(scopeMenuButton)) {
+        if (!menuOpened && !controlMenuOpen(scopeMenuButton)) {
           clickControl(scopeMenuButton, { pointerFirst: true });
           menuOpened = await waitFor(
             () => Boolean(conversationPermissionOption(dialog)),
@@ -343,7 +344,7 @@ async function resolveDevSpaceMaterialization() {
         key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
       }));
     }
-    const resolved = await waitFor(() => !devSpaceMaterializationDialog(), 4000);
+    const resolved = await waitFor(() => !materializationDialog(), 4000);
     reportApproval(dialog, resolved ? "approval_resolved" : "approval_pending",
       resolved ? "conversation-scope" : "card-did-not-close");
     if (!resolved) console.warn("Agent Monitor materialization", "card-did-not-close");
@@ -359,11 +360,6 @@ async function settleBlockingUiAfterGeneration(timeoutMs = 900) {
   return waitFor(() => hasBlockingUi(), timeoutMs);
 }
 
-const toolApprovalCard = devSpaceMaterializationDialog;
-const approvalMenuButton = materializationScopeMenuButton;
-const approvalMenuOpen = materializationMenuOpen;
-const resolveToolApproval = resolveDevSpaceMaterialization;
-
 function stopMonitor() {
   stopped = true;
   if (intervalId) clearInterval(intervalId);
@@ -375,7 +371,7 @@ function stopMonitor() {
   try {
     chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
   } catch {
-    // The old extension context may already be gone during a reload.
+    // The extension context may already be invalid during a reload.
   }
   if (window.__chatgptAgentMonitorStop === stopMonitor) {
     delete window.__chatgptAgentMonitorStop;
@@ -654,8 +650,8 @@ function assistantTurns() {
     '[data-testid^="conversation-turn"][data-turn="assistant"]',
   )];
   if (modern.length) return modern;
-  const legacy = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-  if (legacy.length) return legacy;
+  const fallback = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+  if (fallback.length) return fallback;
   return [...document.querySelectorAll('[data-turn-key]')].filter((turn) =>
     [...turn.querySelectorAll('h4')].some((heading) => heading.textContent?.trim() === 'ChatGPT said:'),
   );
@@ -847,13 +843,28 @@ function normalizedPluginLabel(value) {
   return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-function isDevSpaceLabel(value) {
-  const label = normalizedPluginLabel(value);
-  return label.includes("devspace") || label.includes("spacedev");
+function configuredPluginAliases() {
+  const custom = normalizedPluginLabel(typeof configuredPluginName === "string" ? configuredPluginName : "");
+  return [...new Set([custom, "devspace", "spacedev"].filter(Boolean))];
+}
+
+function textMentionsConfiguredPlugin(value) {
+  const normalized = normalizedPluginLabel(value);
+  return Boolean(normalized) && configuredPluginAliases().some((alias) => normalized.includes(alias));
+}
+
+function pluginLookupValues() {
+  return configuredPluginAliases().map((alias) => `@${alias}`);
+}
+
+function isPluginLabel(value) {
+  return textMentionsConfiguredPlugin(value);
 }
 
 function isPluginLookupPrefix(text) {
-  return Boolean(text && ["@devspace", "@spacedev"].some(lookup => lookup.startsWith(text)));
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return pluginLookupValues().some((lookup) => lookup.startsWith(lower));
 }
 
 function pluginControlLabel(element) {
@@ -867,12 +878,12 @@ function pluginControlLabel(element) {
   ].filter(Boolean).join(" ");
 }
 
-function devSpaceSelected() {
+function pluginSelected() {
   const composer = findComposer();
   if (!composer) return false;
   if ([...composer.querySelectorAll("[app-mention-name][contenteditable='false']")]
     .some((element) => visible(element)
-      && ["devspace", "spacedev"].includes(normalizedPluginLabel(element.getAttribute("app-mention-name"))))) return true;
+      && isPluginLabel(element.getAttribute("app-mention-name")))) return true;
 
   const selector = "a, button, [role='button'], [data-composer-plugin-impression-id]";
   let scope = composerScope(composer);
@@ -883,21 +894,21 @@ function devSpaceSelected() {
     ];
     if (candidates.some((element) => visible(element)
         && !element.closest?.("[role='menu'], [role='listbox'], [role='dialog']")
-        && isDevSpaceLabel(pluginControlLabel(element)))) {
+        && isPluginLabel(pluginControlLabel(element)))) {
       return true;
     }
   }
   return false;
 }
 
-function devSpaceMenuItem() {
+function pluginMenuItem() {
   // The mention picker uses portaled list-navigation buttons, not an ARIA menu.
   const candidates = [...document.querySelectorAll(
     "button[data-list-navigation-item], [role='menu'] [role='menuitem'], [role='listbox'] [role='option'], [data-radix-menu-content] [data-radix-collection-item], [data-radix-popper-content-wrapper] button",
   )]
     .filter(visible)
     .filter((element) => !element.disabled && element.getAttribute("aria-disabled") !== "true")
-    .filter((element) => isDevSpaceLabel(element.innerText || element.textContent || ""));
+    .filter((element) => isPluginLabel(element.innerText || element.textContent || ""));
 
   return candidates.sort((a, b) => {
     const aPreferred = /^(BUTTON|A)$/.test(a.tagName) || /menuitem|option|button/.test(a.getAttribute("role") || "");
@@ -907,12 +918,12 @@ function devSpaceMenuItem() {
   })[0] || null;
 }
 
-async function selectDevSpaceResult() {
-  if (devSpaceSelected()) return true;
-  const item = devSpaceMenuItem();
+async function selectPluginResult() {
+  if (pluginSelected()) return true;
+  const item = pluginMenuItem();
   if (item) {
     HTMLElement.prototype.click.call(item);
-    if (await waitFor(devSpaceSelected, 2000)) return true;
+    if (await waitFor(pluginSelected, 2000)) return true;
   }
   const composer = findComposer();
   if (!composer) return false;
@@ -924,20 +935,23 @@ async function selectDevSpaceResult() {
     composer.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
     }));
-    return waitFor(devSpaceSelected, 8000);
+    return waitFor(pluginSelected, 8000);
   }
   return false;
 }
 
-async function enableDevSpace() {
-  if (devSpaceSelected()) return true;
+async function selectConfiguredPlugin() {
+  if (pluginSelected()) return true;
   const composer = findComposer();
   if (!composer) return false;
   const existing = normalizedText(composerText(composer)).toLowerCase();
   // Repair only an exact prefix of our lookup, never an unrelated user draft.
   if (existing && !isPluginLookupPrefix(existing)) return false;
-  if (existing && devSpaceMenuItem() && await selectDevSpaceResult()) return true;
-  const lookups = existing.startsWith("@space") ? ["@spacedev", "@devspace"] : ["@devspace", "@spacedev"];
+  if (existing && pluginMenuItem() && await selectPluginResult()) return true;
+  const lookups = pluginLookupValues();
+  if (existing) {
+    lookups.sort((a, b) => (b.startsWith(existing) ? 1 : 0) - (a.startsWith(existing) ? 1 : 0));
+  }
   for (const lookup of lookups) {
     const current = findComposer();
     if (!current) return false;
@@ -947,8 +961,8 @@ async function enableDevSpace() {
       if (draft && !await clearComposer(current)) return false;
       if (!await setComposerText(findComposer(), lookup)) return false;
     }
-    if (await waitFor(() => devSpaceSelected() || Boolean(devSpaceMenuItem()), 15000)) {
-      if (await selectDevSpaceResult()) return true;
+    if (await waitFor(() => pluginSelected() || Boolean(pluginMenuItem()), 15000)) {
+      if (await selectPluginResult()) return true;
     }
     // Only remove our exact failed lookup, never a draft typed while waiting.
     if (normalizedText(composerText(findComposer())).toLowerCase() !== lookup) return false;
@@ -965,11 +979,17 @@ function comparableText(text) {
   return normalizedText(text).replace(/\s+/g, " ");
 }
 
+function pluginPrefixPattern() {
+  const custom = String(typeof configuredPluginName === "string" ? configuredPluginName : "")
+    .trim().toLowerCase().replace(/[^a-z0-9\s]+/g, "").replace(/\s+/g, "\\s*");
+  return new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})\\s+`, "i");
+}
+
 function latestUserMatchesPrompt(expectedPrompt) {
   const actual = comparableText(latestUserText());
   const expected = comparableText(expectedPrompt);
   return Boolean(expected && (actual === expected
-    || actual.replace(/^@?(?:devspace|spacedev)\s+/i, "") === expected));
+    || actual.replace(pluginPrefixPattern(), "") === expected));
 }
 
 function validHandoffText(text) {
@@ -1068,8 +1088,9 @@ function sendButtonReady(button) {
   return Boolean(button && visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true");
 }
 
-async function submitComposer(composer, expectedUrl = location.href) {
-  const requested = comparableText(composerText(composer));
+async function submitComposer(composer, expectedUrl = location.href, requirePlugin = false) {
+  const draft = composerText(composer);
+  const requested = comparableText(draft);
   const submitted = () => isGenerating() || (
     !composerText(findComposer()) && latestUserMatchesPrompt(requested)
   );
@@ -1083,13 +1104,32 @@ async function submitComposer(composer, expectedUrl = location.href) {
     lastPromptFailureReason = 'composer-changed';
     return false;
   }
-  const button = findSendButton(composer);
   const ownership = await sendRuntime({ type: "isTargetTab" });
   if (stopped || !ownership?.target || ownership.paused || isGenerating() || hasBlockingUi()
       || !sameConversation(expectedUrl) || findComposer() !== composer) {
     lastPromptFailureReason = 'send-conditions-changed';
     return false;
   }
+  // A fresh composer can change models as the draft loads. Verify once the
+  // Send button exists, since the closed picker only shows reasoning effort.
+  const modelReady = !requirePlugin || await ensureModelPreferences(ownership, true);
+  if (stopped || !sameConversation(expectedUrl) || findComposer() !== composer
+      || isGenerating() || hasBlockingUi() || composerText(composer) !== draft) {
+    lastPromptFailureReason = 'send-conditions-changed';
+    return false;
+  }
+  if (requirePlugin && !pluginSelected()) {
+    // Release the unchanged handoff draft so the background retry can
+    // select the plugin again through the empty composer.
+    await clearComposer(composer);
+    lastPromptFailureReason = 'plugin-selection-lost';
+    return false;
+  }
+  if (!modelReady) {
+    lastPromptFailureReason = 'model-preference';
+    return false;
+  }
+  const button = findSendButton(composer);
   if (sendButtonReady(button)) {
     HTMLButtonElement.prototype.click.call(button);
     if (await waitFor(submitted, 10000)) return true;
@@ -1173,7 +1213,7 @@ async function ensureModelPreferences(preferences, force = false) {
   const signature = trigger ? `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` : '';
   const key = `${location.href}|${model}|${reasoning}`;
   if (!force && verifiedModelSelection?.trigger === trigger && verifiedModelSelection.key === key
-      && verifiedModelSelection.signature === signature && !approvalMenuOpen(trigger)) return true;
+      && verifiedModelSelection.signature === signature && !controlMenuOpen(trigger)) return true;
   if (modelPreferenceRetryAt > Date.now() && modelPreferenceFailure === key) return false;
 
   // Check ownership again before every click. A pause, approval, or new response
@@ -1185,7 +1225,7 @@ async function ensureModelPreferences(preferences, force = false) {
       && (current.preferredModel || '') === model && (current.preferredReasoning || '') === reasoning;
   };
   if (!await canAct()) return false;
-  if (trigger && !approvalMenuOpen(trigger)
+  if (trigger && !controlMenuOpen(trigger)
       && [...document.querySelectorAll('[role="menu"], [role="dialog"]')].some(visible)) return false;
   let opened = false;
   let success = false;
@@ -1193,7 +1233,7 @@ async function ensureModelPreferences(preferences, force = false) {
   let reason = 'picker-unavailable';
   try {
     if (!trigger) return false;
-    if (!approvalMenuOpen(trigger)) {
+    if (!controlMenuOpen(trigger)) {
       clickControl(trigger, { pointerFirst: true });
       opened = true;
     }
@@ -1261,10 +1301,10 @@ async function ensureModelPreferences(preferences, force = false) {
     }
     success = await canAct();
   } finally {
-    if (opened && approvalMenuOpen(trigger)) {
+    if (opened && controlMenuOpen(trigger)) {
       const menu = pickerMenu(trigger);
       menu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-      if (!await waitFor(() => !approvalMenuOpen(trigger), 1000)) success = false;
+      if (!await waitFor(() => !controlMenuOpen(trigger), 1000)) success = false;
     }
     if (success) {
       verifiedModelSelection = { trigger, key, signature: `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` };
@@ -1281,7 +1321,7 @@ async function ensureModelPreferences(preferences, force = false) {
   return success;
 }
 
-async function sendPrompt(text, requireDevSpace = false) {
+async function sendPrompt(text, requirePlugin = false) {
   lastPromptFailureReason = 'unknown';
   const expectedUrl = location.href;
   const ownership = await sendRuntime({ type: "isTargetTab" });
@@ -1302,10 +1342,7 @@ async function sendPrompt(text, requireDevSpace = false) {
     lastPromptFailureReason = 'composer-blocked';
     return false;
   }
-  // The scan has already verified the model before selecting the DevSpace
-  // mention. Reopening that menu can interrupt the selected plugin/editor.
-  // Reuse a valid verification cache, but still check if it has gone stale.
-  if (!await ensureModelPreferences(ownership)) {
+  if (!requirePlugin && !await ensureModelPreferences(ownership)) {
     lastPromptFailureReason = 'model-preference';
     return false;
   }
@@ -1314,7 +1351,7 @@ async function sendPrompt(text, requireDevSpace = false) {
     lastPromptFailureReason = 'conversation-changed';
     return false;
   }
-  if (requireDevSpace && !devSpaceSelected()) {
+  if (requirePlugin && !pluginSelected()) {
     lastPromptFailureReason = 'plugin-selection-lost';
     return false;
   }
@@ -1333,12 +1370,7 @@ async function sendPrompt(text, requireDevSpace = false) {
     lastPromptFailureReason = 'composer-text-mismatch';
     return false;
   }
-  return submitComposer(composer, expectedUrl);
-}
-
-async function sendPromptWithRetry(text, requireDevSpace = false) {
-  // The background owns delayed retries. One attempt must produce one click.
-  return sendPrompt(text, requireDevSpace);
+  return submitComposer(composer, expectedUrl, requirePlugin);
 }
 
 async function manualSwap(prompt, expectedUrl = location.href) {
@@ -1355,7 +1387,7 @@ async function manualSwap(prompt, expectedUrl = location.href) {
       await new Promise((resolve) => setTimeout(resolve, 600));
     }
     if (!sameConversation(expectedUrl)) return false;
-    ok = await sendPromptWithRetry(prompt);
+    ok = await sendPrompt(prompt);
     return ok;
   } finally {
     await sendRuntime({
@@ -1377,7 +1409,7 @@ async function manualContinue(prompt, expectedUrl = location.href) {
   try {
     if (!await waitFor(() => !scanRunning, 10000)) return false;
     if (!sameConversation(expectedUrl)) return false;
-    ok = await sendPromptWithRetry(prompt);
+    ok = await sendPrompt(prompt);
     return ok;
   } finally {
     await sendRuntime({
@@ -1452,8 +1484,8 @@ async function openNewChat() {
 
 async function handleAction(result) {
   if (hasBlockingUi()) return;
-  if (["sendHandoff", "sendContinue", "sendBlockedReview"].includes(result.action)) {
-    const ok = await sendPromptWithRetry(result.prompt);
+  if (["sendHandoff", "sendContinue", "sendTerminalReview"].includes(result.action)) {
+    const ok = await sendPrompt(result.prompt);
     await sendRuntime({
       type: "commandResult",
       action: result.action,
@@ -1480,30 +1512,7 @@ async function handleAction(result) {
   }
 }
 
-async function preparePendingHandoff(preferences, expectedUrl) {
-  // Selecting DevSpace can change the active model on a fresh chat, while
-  // opening the model picker can in turn disturb the selected plugin. Require
-  // both states to be valid at the same time before a handoff is submitted.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (!devSpaceSelected() && !await enableDevSpace()) {
-      lastPromptFailureReason = 'plugin-selection-lost';
-      return false;
-    }
-    if (!sameConversation(expectedUrl)) {
-      lastPromptFailureReason = 'conversation-changed';
-      return false;
-    }
-    if (!await ensureModelPreferences(preferences, true)) {
-      lastPromptFailureReason = 'model-preference';
-      return false;
-    }
-    if (devSpaceSelected()) return true;
-  }
-  lastPromptFailureReason = 'plugin-selection-lost';
-  return false;
-}
-
-async function deliverPendingHandoff(preferences) {
+async function deliverPendingHandoff() {
   if (hasBlockingUi()) return;
   const expectedUrl = location.href;
   const result = await sendRuntime({ type: "getPendingHandoff" });
@@ -1517,14 +1526,14 @@ async function deliverPendingHandoff(preferences) {
     }
     return;
   }
-  if (!await preparePendingHandoff(preferences, expectedUrl)) {
+  if (!pluginSelected() && !await selectConfiguredPlugin()) {
     await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
-      reason: lastPromptFailureReason, url: location.href });
+      reason: 'plugin-selection-lost', url: location.href });
     return;
   }
   if (!sameConversation(expectedUrl)) return;
 
-  const ok = await sendPromptWithRetry(result.prompt, true);
+  const ok = await sendPrompt(result.prompt, true);
   if (ok) {
     await sendRuntime({ type: "handoffDelivered", url: location.href });
     return;
@@ -1578,6 +1587,7 @@ async function scan() {
     // A transient service-worker wakeup failure is not proof that this tab lost ownership.
     if (!tabRole) return;
     extendedThinkingLimitMs = Math.min(60, Math.max(1, Number(tabRole.thinkingMinutes) || 10)) * 60 * 1000;
+    if (tabRole.pluginName) configuredPluginName = String(tabRole.pluginName).trim() || "DevSpace";
     if (!tabRole.target) {
       stopMonitor();
       return;
@@ -1591,12 +1601,12 @@ async function scan() {
       scheduleScan();
       return;
     }
-    if (await resolveDevSpaceMaterialization()) { resetExtendedThinking("monitor-reset"); return; }
+    if (await resolveMaterializationPermission()) { resetExtendedThinking("monitor-reset"); return; }
 
     if (!isConversationPage() || tabRole.pendingDelivery) {
       resetExtendedThinking("monitor-reset");
       if (isGenerating()) return;
-      await deliverPendingHandoff(tabRole);
+      await deliverPendingHandoff();
       return;
     }
 
@@ -1669,7 +1679,7 @@ async function scan() {
     // A permission dialog can appear while this scan is already in flight.
     // It outranks status/continuation decisions, so abort before notifying the
     // background or submitting any prompt.
-    if (await resolveDevSpaceMaterialization()) return;
+    if (await resolveMaterializationPermission()) return;
 
     // Let completed/blocked replies reach the background and pause the task
     // before reconciling model choices. Active generation is never interrupted.
@@ -1694,7 +1704,7 @@ async function scan() {
       terminalStatus: terminalMarker(latestResponseText),
       consecutiveBlockedResponses: generating ? 0 : consecutiveBlockedResponses(),
     });
-    if (await resolveDevSpaceMaterialization()) return;
+    if (await resolveMaterializationPermission()) return;
     if (result?.action && !manualActionRunning && !hasBlockingUi()
         && sameConversation(scannedUrl)) await handleAction(result);
   } catch (error) {

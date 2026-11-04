@@ -7,11 +7,11 @@ const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8")
 assert.doesNotMatch(source, /copy-turn-action-button|navigator\.clipboard/,
   "response capture must not depend on ChatGPT's clipboard control");
 const start = source.indexOf("function normalizedPluginLabel");
-const end = source.indexOf("function devSpaceMenuItem", start);
+const end = source.indexOf("function pluginMenuItem", start);
 assert.ok(start >= 0 && end > start, "plugin label helpers not found");
 
 const sandbox = {};
-vm.runInNewContext(`${source.slice(start, end)}; matches = isDevSpaceLabel;`, sandbox);
+vm.runInNewContext(`${source.slice(start, end)}; matches = isPluginLabel;`, sandbox);
 
 for (const label of ["DevSpace", "Devspace", "devspace", "Dev Space", "Devspace Devspace", "spacedev", "SpaceDev", "Space Dev", "Remove spacedev"]) {
   assert.equal(sandbox.matches(label), true, `expected ${label} to match`);
@@ -20,6 +20,12 @@ assert.equal(sandbox.matches("Devspace Devspace local tools"), true);
 assert.equal(sandbox.matches("Remove Devspace"), true,
   "accessible labels that put the remove action before the plugin name must match");
 assert.equal(sandbox.matches("Devspace plugin, remove"), true);
+sandbox.configuredPluginName = "codespace";
+for (const label of ["codespace", "Codespace", "CODESPACE", "Code Space", "CODE SPACE", "Remove codespace"]) {
+  assert.equal(sandbox.matches(label), true, `expected ${label} to match the configured plugin`);
+}
+assert.equal(sandbox.matches("Unrelated Plugin"), false);
+delete sandbox.configuredPluginName;
 for (const label of ["Deep research", "OpenAI Platform", "Development Space"]) {
   assert.equal(sandbox.matches(label), false, `expected ${label} not to match`);
 }
@@ -41,7 +47,7 @@ const selectedChip = {
   textContent: "×",
   getAttribute(name) { return name === "aria-label" ? "Remove Devspace" : null; },
 };
-vm.runInNewContext(`${source.slice(start, end)}; selected = devSpaceSelected;`, selectedContext);
+vm.runInNewContext(`${source.slice(start, end)}; selected = pluginSelected;`, selectedContext);
 assert.equal(selectedContext.selected(), true,
   "a selected Devspace chip with an action-prefixed label must not be clicked again");
 
@@ -155,4 +161,4 @@ assert.doesNotMatch(source.slice(observerStart, observerEnd), /isGenerating\(/,
   "mutation callbacks must not perform full generation-state DOM scans");
 assert.match(source, /setInterval\(\(\) => void scan\(\), 5000\)/);
 
-console.log("control_labels_ok");
+console.log("plugin_labels_ok");

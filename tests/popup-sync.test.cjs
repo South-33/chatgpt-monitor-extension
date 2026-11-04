@@ -10,15 +10,17 @@ function popup(tabId, index) {
   let changed;
   const sandbox = {
     settingsLoaded: true, promptTabId: tabId, savedSettings: null,
-    pendingModelWrites: 0, preferredModel: { value: '', disabled: false },
+    pendingControlWrites: 0, preferredModel: { value: '', disabled: false },
     preferredReasoning: { value: '', disabled: false },
     enforceModelPreferences: { checked: true },
+    reviewWorkflow: { checked: false },
     updateModelControls() {
       sandbox.preferredModel.disabled = !sandbox.enforceModelPreferences.checked;
       sandbox.preferredReasoning.disabled = !sandbox.enforceModelPreferences.checked;
     },
     promptTimer: null, thresholdTimer: null, pendingPromptWrites: 0,
-    switchingPreset: false, saveFailed: false,
+    switchingPreset: false, saveFailed: false, saveQueue: Promise.resolve(),
+    promptState: { textContent: '' }, showNotice: message => { throw new Error(message); },
     presets: ['one', 'two', 'three', 'four'], activePreset: index,
     continuePrompt: { value: ['one', 'two', 'three', 'four'][index] },
     threshold: { value: 400 }, thinkingMinutes: { value: 15 },
@@ -44,17 +46,18 @@ assert.equal(right.sandbox.continuePrompt.value, 'updated two');
 assert.equal(right.sandbox.activePreset, 1, 'shared text must not synchronize selected slots');
 assert.equal(right.sandbox.preferredModel.value, 'GPT-5.6 Sol');
 assert.equal(left.sandbox.preferredReasoning.value, 'high');
-left.update({ ...settings, enforceModelPreferences: false });
+left.update({ ...settings, enforceModelPreferences: false, reviewWorkflow: true });
+assert.equal(left.sandbox.reviewWorkflow.checked, true);
 assert.equal(left.sandbox.enforceModelPreferences.checked, false);
 assert.equal(left.sandbox.preferredModel.disabled, true);
 assert.equal(left.sandbox.preferredReasoning.disabled, true);
 left.update(settings);
 assert.equal(left.sandbox.preferredModel.disabled, false);
-right.sandbox.pendingModelWrites = 1;
+right.sandbox.pendingControlWrites = 1;
 right.sandbox.preferredModel.value = 'GPT-6';
 right.update(settings);
 assert.equal(right.sandbox.preferredModel.value, 'GPT-6', 'model saves must not erase a queued edit');
-right.sandbox.pendingModelWrites = 0;
+right.sandbox.pendingControlWrites = 0;
 
 right.sandbox.continuePrompt.value = 'a draft being typed';
 right.sandbox.promptTimer = 1;
@@ -68,4 +71,21 @@ assert.equal(right.sandbox.continuePrompt.value, 'a draft being typed', 'queued 
 right.sandbox.pendingPromptWrites = 0;
 right.update({ ...settings, continuePresets: ['updated one', 'a draft being typed', 'three', 'four'] });
 assert.equal(right.sandbox.presets[1], 'a draft being typed');
-console.log('popup_sync_ok');
+
+(async () => {
+  const { sandbox } = right;
+  let finishSwitch;
+  const saved = new Promise(resolve => { finishSwitch = resolve; });
+  sandbox.chrome.runtime = {
+    sendMessage: () => saved,
+  };
+  const switchStart = source.indexOf('async function switchPreset(');
+  vm.runInNewContext(source.slice(switchStart, source.indexOf('async function saveThreshold(', switchStart)), sandbox);
+  const switching = sandbox.switchPreset(0);
+  assert.equal(sandbox.continuePrompt.disabled, true, 'block edits until the new slot is ready');
+  finishSwitch({ ok: true, settings: { continuePresets: ['newest one', 'a draft being typed', 'three', 'four'] } });
+  await switching;
+  assert.equal(sandbox.continuePrompt.value, 'newest one', 'load the saved slot instead of a stale local copy');
+  assert.equal(sandbox.continuePrompt.disabled, false);
+  console.log('popup_sync_ok');
+})().catch(error => { console.error(error); process.exitCode = 1; });

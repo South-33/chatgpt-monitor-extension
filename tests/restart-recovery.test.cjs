@@ -94,8 +94,9 @@ function boot() {
 
   await send({
     type: "commandResult",
-    action: "enableDevSpace",
+    action: "deliverHandoff",
     ok: false,
+    reason: "plugin-selection-lost",
     url: freshSender.tab.url,
   }, freshSender);
 

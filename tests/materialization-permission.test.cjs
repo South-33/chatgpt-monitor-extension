@@ -6,12 +6,15 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
 const helpersStart = source.indexOf("function normalizedControlText");
-const helpersEnd = source.indexOf("function devSpaceMaterializationDialog", helpersStart);
+const helpersEnd = source.indexOf("function materializationDialog", helpersStart);
+const pluginHelpersStart = source.indexOf("function normalizedPluginLabel");
+const pluginHelpersEnd = source.indexOf("function isPluginLabel", pluginHelpersStart);
 assert.ok(helpersStart >= 0 && helpersEnd > helpersStart, "materialization label helpers not found");
+assert.ok(pluginHelpersStart >= 0 && pluginHelpersEnd > pluginHelpersStart, "plugin match helpers not found");
 
 const sandbox = {};
 vm.runInNewContext(
-  `${source.slice(helpersStart, helpersEnd)}; matchesDialog = isDevSpaceMaterializationText; matchesScope = isConversationPermissionLabel;`,
+  `${source.slice(pluginHelpersStart, pluginHelpersEnd)}\n${source.slice(helpersStart, helpersEnd)}; matchesDialog = isPluginMaterializationText; matchesScope = isConversationPermissionLabel;`,
   sandbox,
 );
 
@@ -34,8 +37,19 @@ assert.equal(sandbox.matchesScope("Allow for the whole conversation"), false);
 assert.equal(sandbox.matchesScope("  Allow   Devspace for this conversation  "), true);
 assert.equal(sandbox.matchesScope("Allow Devspace once"), false);
 assert.equal(sandbox.matchesScope("Allow another app for this conversation"), false);
+sandbox.configuredPluginName = "codespace";
+assert.equal(sandbox.matchesDialog(
+  "Allow file materialization? ChatGPT needs your approval to materialize 1 file attachments returned by codespace.",
+), true);
+assert.equal(sandbox.matchesDialog(
+  "Allow file materialization? ChatGPT needs your approval to materialize 1 file attachments returned by CODE SPACE.",
+), true);
+assert.equal(sandbox.matchesScope("Allow codespace for this conversation"), true);
+assert.equal(sandbox.matchesScope("Allow CODE SPACE for this conversation"), true);
+assert.equal(sandbox.matchesScope("Allow another app for this conversation"), false);
+delete sandbox.configuredPluginName;
 
-const dialogStart = source.indexOf("function devSpaceMaterializationDialog()");
+const dialogStart = source.indexOf("function materializationDialog()");
 const dialogEnd = source.indexOf("function conversationPermissionOption", dialogStart);
 assert.ok(dialogStart >= 0 && dialogEnd > dialogStart, "materialization card finder not found");
 
@@ -53,10 +67,10 @@ assert.ok(dialogStart >= 0 && dialogEnd > dialogStart, "materialization card fin
     },
     visible: () => true,
     normalizedControlText: sandbox.normalizedControlText,
-    isDevSpaceMaterializationText: sandbox.matchesDialog,
-    hasDevSpaceApprovalControls: () => true,
+    isPluginMaterializationText: sandbox.matchesDialog,
+    hasMaterializationApprovalControls: () => true,
   };
-  vm.runInNewContext(`${source.slice(dialogStart, dialogEnd)}; findCard = devSpaceMaterializationDialog;`, exactCardSandbox);
+  vm.runInNewContext(`${source.slice(dialogStart, dialogEnd)}; findCard = materializationDialog;`, exactCardSandbox);
   assert.equal(exactCardSandbox.findCard(), exactCard,
     "ChatGPT tool-approval-card must be the primary materialization anchor");
   exactCard.innerText = 'Allow Devspace to execute a command? Deny Allow';
@@ -78,7 +92,7 @@ assert.ok(dialogStart >= 0 && dialogEnd > dialogStart, "materialization card fin
     document: { querySelectorAll: () => [card] },
     visible: () => true,
     normalizedControlText: sandbox.normalizedControlText,
-    devSpaceMaterializationDialog: () => null,
+    materializationDialog: () => null,
     blockingUiRunning: false,
   };
   vm.runInNewContext(source.slice(start, end), context);
@@ -116,10 +130,10 @@ assert.ok(dialogStart >= 0 && dialogEnd > dialogStart, "materialization card fin
     },
     visible: () => true,
     normalizedControlText: sandbox.normalizedControlText,
-    isDevSpaceMaterializationText: sandbox.matchesDialog,
-    hasDevSpaceApprovalControls: () => true,
+    isPluginMaterializationText: sandbox.matchesDialog,
+    hasMaterializationApprovalControls: () => true,
   };
-  vm.runInNewContext(`${source.slice(dialogStart, dialogEnd)}; findCard = devSpaceMaterializationDialog;`, cardSandbox);
+  vm.runInNewContext(`${source.slice(dialogStart, dialogEnd)}; findCard = materializationDialog;`, cardSandbox);
   assert.equal(cardSandbox.findCard(), card,
     "role-less ChatGPT materialization cards must still be detected from their visible text");
 }
@@ -128,7 +142,7 @@ const scanStart = source.indexOf("async function scan()");
 const scanEnd = source.indexOf("function scheduleScan", scanStart);
 assert.ok(scanStart >= 0 && scanEnd > scanStart, "scan function not found");
 const scanSource = source.slice(scanStart, scanEnd);
-assert.ok((scanSource.match(/resolveDevSpaceMaterialization\(\)/g) || []).length >= 3,
+assert.ok((scanSource.match(/resolveMaterializationPermission\(\)/g) || []).length >= 3,
   "blocking permission UI must be checked before scan work, before status, and before actions");
 assert.match(scanSource, /if \(result\?\.action && !manualActionRunning && !hasBlockingUi\(\)\s*&& sameConversation\(scannedUrl\)\) await handleAction\(result\);/,
   "continuation actions must never run while blocking UI is active");
@@ -222,7 +236,7 @@ async function runAssistScenario() {
     isConversationPermissionLabel: (value) => /^allow(?:\s+devspace)?\s+for\s+this\s+conversation$/i.test(
       (value || "").replace(/\s+/g, " ").trim(),
     ),
-    devSpaceMaterializationDialog: () => dialogOpen ? dialog : null,
+    materializationDialog: () => dialogOpen ? dialog : null,
     waitFor: async (predicate) => Boolean(predicate()),
     HTMLElement: function HTMLElement() {},
     MouseEvent: class MouseEvent {
@@ -255,7 +269,7 @@ async function runAssistScenario() {
     dialogOpen = false;
   };
 
-  vm.runInNewContext(`${source.slice(assistStart, assistEnd)}; assist = resolveDevSpaceMaterialization;`, behaviorSandbox);
+  vm.runInNewContext(`${source.slice(assistStart, assistEnd)}; assist = resolveMaterializationPermission;`, behaviorSandbox);
   const handled = await behaviorSandbox.assist();
   return { handled, allowButton, scopeButton, option, dialog };
 }
@@ -271,7 +285,7 @@ async function runAssistScenario() {
     "the main Allow button must never be clicked because that only grants one-time access");
 
   const sendPromptStart = source.indexOf("async function sendPrompt(");
-  const sendPromptEnd = source.indexOf("async function sendPromptWithRetry", sendPromptStart);
+  const sendPromptEnd = source.indexOf("async function manualSwap", sendPromptStart);
   const sendPromptSource = source.slice(sendPromptStart, sendPromptEnd);
   assert.match(sendPromptSource, /hasBlockingUi\(\)/,
     "prompt submission must be blocked while permission UI exists");
@@ -279,7 +293,7 @@ async function runAssistScenario() {
   const observerStart = source.indexOf("observer = new MutationObserver");
   assert.ok(observerStart >= 0, "DOM observer not found");
   const observerSource = source.slice(observerStart, source.indexOf("observer.observe", observerStart));
-  assert.doesNotMatch(observerSource, /resolveDevSpaceMaterialization\(\)/,
+  assert.doesNotMatch(observerSource, /resolveMaterializationPermission\(\)/,
     "the observer must schedule work through the ownership and pause checks");
 
   assert.match(scanSource, /generationEnded && await settleBlockingUiAfterGeneration\(\)/,

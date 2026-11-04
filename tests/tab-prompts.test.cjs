@@ -34,6 +34,7 @@ function worker() {
     type: 'saveContinuePreset', tabId, index: tabId - 1, text: `Work on task ${tabId} only.`,
   })));
   for (const tabId of [1, 2, 3, 4]) {
+    if (tabId === 4) await harness.send({ type: 'saveSettings', settings: { reviewWorkflow: true } });
     const settings = (await harness.send({ type: 'getSettings', tabId })).settings;
     assert.equal(settings.continuePresetIndex, tabId - 1);
     assert.equal(settings.continuePrompt, `Work on task ${tabId} only.`);
@@ -56,23 +57,37 @@ function worker() {
   }
   assert.equal((await harness.send({ type: 'isTargetTab' }, { tab: { id: 5 } })).target, false,
     'monitoring selected tabs must not enroll other open tabs');
+  const reviewUrl = 'https://chatgpt.com/c/4';
+  const reviewSender = { tab: { id: 4, url: reviewUrl } };
+  for (const [step, expected] of [
+    ['continue', /^Automated message: Continue$/],
+    ['review', /Step back from the recent work/],
+    ['housekeeping', /Give related work one clear home/],
+    ['custom', /Work on task 4 only\./],
+  ]) {
+    if (step === 'review') harness = worker();
+    const action = await harness.send({ type: 'status', url: reviewUrl, isGenerating: false,
+      responseKey: `workflow-${step}`, latestResponseText: 'More work remains.',
+    }, reviewSender);
+    assert.match(action.prompt, expected);
+    await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+  }
+  await harness.send({ type: 'saveSettings', settings: { reviewWorkflow: false } });
   // Only successful deliveries count, with independent cycles for each thread.
   const cycleUrl = 'https://chatgpt.com/c/2';
   const cycleSender = { tab: { id: 2, url: cycleUrl } };
   const continuation = key => harness.send({ type: 'status', url: cycleUrl, isGenerating: false,
     responseKey: key, latestResponseText: 'More work remains.' }, cycleSender);
   const generic1 = await continuation('cycle-generic-1');
-  assert.ok(generic1.prompt.includes('\n\ncontinue\n\n'));
-  assert.match(generic1.prompt, /TASK_FINISHED/, 'even short turns must have a clear completion signal');
-  assert.match(generic1.prompt, /TASK_BLOCKED/, 'even short turns must have a clear blocked signal');
-  assert.equal(generic1.prompt.includes('Completion contract:'), false,
-    'generic turns use a brief note, not the full custom completion contract');
+  assert.equal(generic1.prompt, 'Automated message: Continue');
+  assert.doesNotMatch(generic1.prompt, /TASK_FINISHED|TASK_BLOCKED|completion contract/i,
+    'generic turns do not repeat terminal guidance');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: false, url: cycleUrl }, cycleSender);
   assert.equal(local.runtime.states[2].genericContinuesRemaining, 2, 'failed sends do not advance the cycle');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   harness = worker();
   const generic2 = await continuation('cycle-generic-2');
-  assert.ok(generic2.prompt.includes('\n\ncontinue\n\n'), 'the cycle survives worker restarts');
+  assert.equal(generic2.prompt, 'Automated message: Continue', 'the cycle survives worker restarts');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   const customAgain = await continuation('cycle-custom-again');
   assert.ok(customAgain.prompt.includes('Work on task 2 only.'));
@@ -94,10 +109,6 @@ function worker() {
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
     'remove the duplicated automation preamble while preserving the custom task notes');
   await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text:
-    'Automated continuation of the original user task. Keep the user\'s goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.\n\nWork on task 2 only.\n\nCompletion contract: Work only toward the original user\'s goal and constraints. Complete useful, authorized steps and verify results; do not invent extra work. When the original goal is complete and verified, end with TASK_FINISHED on a line by itself. If you cannot proceed without user action after checking reasonable alternatives, explain the blocker and end with TASK_BLOCKED on a line by itself. Otherwise use neither marker and keep working on the original goal.' });
-  assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
-    'legacy generated wrappers are stripped when pasted back into a preset');
-  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text:
     'This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.\n\nWork on task 2 only.\n\nIf the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.' });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
     'current generated wrappers are stripped when pasted back into a preset');
@@ -117,6 +128,11 @@ function worker() {
   assert.ok(newConversation.prompt.includes('Work on task 2 only.'), 'a fresh conversation starts with custom notes');
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt,
     'Work on task 2 only.');
+  const spacedPrompt = '  Work on task 2 only.  \n\n';
+  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: spacedPrompt });
+  harness = worker();
+  assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt,
+    spacedPrompt, 'preserve the editor text through autosave and worker restart');
   await harness.send({ type: 'saveContinuePreset', tabId: 1, index: 3, text: 'Changed tab one.' });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 4 })).settings.continuePrompt,
     'Changed tab one.', 'edits sync to other tabs using the same slot');
@@ -128,6 +144,6 @@ function worker() {
     'Work on task 1 only.', 'new tabs start with shared slot one');
   await harness.send({ type: 'saveContinuePreset', index: 3 });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 6 })).settings.continuePresetIndex,
-    0, 'a new tab must start on slot one even when the legacy global selection differs');
+    0, 'a new tab must start on slot one even when the global selection differs');
   console.log('tab_prompts_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

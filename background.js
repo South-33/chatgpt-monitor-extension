@@ -4,12 +4,14 @@ const DEFAULT_SETTINGS = {
   preferredModel: "GPT-5.6 Sol",
   preferredReasoning: "high",
   enforceModelPreferences: true,
+  reviewWorkflow: false,
   enabled: false,
   targetTabIds: [],
   thresholdMinutes: 130,
   thinkingMinutes: 10,
+  pluginName: "DevSpace",
   handoffPrompt:
-    "You are performing a CONTEXT CHECKPOINT COMPACTION. Write a concise handoff for another agent continuing this task in a fresh chat. State the repository or workspace being worked in, including its absolute path when available. Preserve the original goal, important user decisions and constraints, current progress, verified results, unresolved questions, and the most useful next steps. Include reasoning or references only when they help the next agent make a decision, find essential work, or avoid repeating a mistake. Distinguish facts from assumptions. Skip routine environment metadata, tool versions, commit hashes, and details the next agent can easily inspect, unless the task specifically depends on them. Include only what matters for continuing the work; omit empty sections and incidental history. Before writing the handoff, take a brief preparation pass when useful: finish a small in-progress step, save important results, clean up loose ends, or update an existing note so the next agent can continue smoothly. Use judgment about what helps, but keep this bounded and do not start a major new work phase.",
+    "Write a concise handoff for an agent resuming this task in a fresh chat. Give the workspace path when available, the original goal and constraints, what is verified, what remains uncertain, and the most useful next steps. Point to the current files or evidence the next agent needs. Include past decisions when they prevent repeated work. If needed, save essential results before handing off.",
   continuePrompt:
     "Continue the original user task. Check the current state, identify the most useful unfinished step within the agreed scope, perform it with available authorized tools, and verify the result. Work through meaningful remaining steps before stopping. Do not repeat settled work, widen the goal, or invent extra tasks just to keep working. If the goal is already complete or genuinely blocked, say so instead of creating more work.",
   continuePresetIndex: 0,
@@ -27,23 +29,24 @@ const CONTINUE_TERMINAL_NOTE =
 const AUTOMATION_NOTE =
   "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
 
-const BLOCKED_REVIEW_PROMPT =
-  "Before stopping, reconsider the blocker against the ORIGINAL user's goal and constraints. Identify what specifically prevents progress. Check for a reasonable, safe, authorized alternative that would advance the same goal without user action; if one exists, try it and verify the outcome. Do not invent a new goal, repeat a failed step without new evidence, bypass permissions, or claim success without verification. If useful work on the original goal can continue, do it and omit the terminal markers. If the goal is fully complete and verified, end with TASK_FINISHED on its own final line. If no viable authorized next step remains and user action is genuinely required, explain exactly what is needed and end with TASK_BLOCKED on its own final line. This is the single reconsideration request; do not request another review.";
+const HOUSEKEEPING_GUIDANCE =
+  "Leave the area you worked in clean and current so the next person or agent can find the right files and resume quickly. Give related work one clear home. Update the existing source of truth, combine duplicates, and retire clearly obsolete code, tests, docs, and temporary output. Prefer fewer files and less code while preserving useful checks, unique evidence, and unrelated work. Keep active material easy to find and put retained history in its existing home. Verify the paths and behavior you changed.";
 
-const SHORT_CONTINUES = ["continue", "keep going"];
-const LEGACY_AUTOMATION_NOTE = "Automated continuation of the original user task. Keep the user's goal and constraints; do meaningful remaining work and verify it. Do not invent extra goals or tasks to stay active. If the original goal is verified complete, end with TASK_FINISHED on its own final line. If no authorized next step is possible without user action, explain the blocker and end with TASK_BLOCKED on its own final line. Otherwise omit both markers and keep working.";
+const FINISHED_REVIEW_PROMPT =
+  `Before accepting TASK_FINISHED, verify the original goal and acceptance criteria. Fix any clear omission.\n\n${HOUSEKEEPING_GUIDANCE}\n\n${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only completion review for this stop attempt.`;
+
+const BLOCKED_REVIEW_PROMPT =
+  `Before accepting TASK_BLOCKED, identify the exact blocker and check for a reasonable, authorized way to make progress.\n\n${HOUSEKEEPING_GUIDANCE}\n\nIf still blocked, say what you need from the user. ${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only blocker review for this stop attempt.`;
+
+const GENERIC_CONTINUE_PROMPT = "Automated message: Continue";
 
 function customContinueText(text) {
-  // Preserve the user's task notes, but remove wrappers produced by older
-  // monitor versions if a generated prompt was pasted back into a preset.
-  let cleaned = String(text || "").trim()
+  const original = String(text || "");
+  let cleaned = original.trim()
     .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
     .trim();
   if (cleaned.startsWith(AUTOMATION_NOTE)) {
     cleaned = cleaned.slice(AUTOMATION_NOTE.length).trim();
-  }
-  if (cleaned.startsWith(LEGACY_AUTOMATION_NOTE)) {
-    cleaned = cleaned.slice(LEGACY_AUTOMATION_NOTE.length).trim();
   }
   if (cleaned.endsWith(GOAL_CONTRACT)) {
     cleaned = cleaned.slice(0, -GOAL_CONTRACT.length).trim();
@@ -51,58 +54,46 @@ function customContinueText(text) {
   if (cleaned.endsWith(CONTINUE_TERMINAL_NOTE)) {
     cleaned = cleaned.slice(0, -CONTINUE_TERMINAL_NOTE.length).trim();
   }
-  return cleaned;
+  return cleaned === original.trim() ? original : cleaned;
 }
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
-const HANDOFF_OPENERS = [
-  "You are performing a CONTEXT CHECKPOINT COMPACTION.",
-  "This is a CONTEXT CHECKPOINT COMPACTION.",
-];
-
-function choose(items) {
-  return items[Math.floor(Math.random() * items.length)];
-}
-
-function varySpacing(text) {
-  return text.replace(/\. (?=[A-Z])/, () => `. ${" ".repeat(Math.floor(Math.random() * 3))}`);
-}
 
 function isShortContinuePrompt(prompt) {
-  const text = String(prompt || "").trim();
-  const withoutCurrentNote = text.startsWith(AUTOMATION_NOTE)
-    ? text.slice(AUTOMATION_NOTE.length).trim()
-    : text;
-  const withoutLegacyNote = withoutCurrentNote.startsWith(LEGACY_AUTOMATION_NOTE)
-    ? withoutCurrentNote.slice(LEGACY_AUTOMATION_NOTE.length).trim()
-    : withoutCurrentNote;
-  const body = withoutLegacyNote.endsWith(CONTINUE_TERMINAL_NOTE)
-    ? withoutLegacyNote.slice(0, -CONTINUE_TERMINAL_NOTE.length).trim()
-    : withoutLegacyNote;
-  return SHORT_CONTINUES.includes(body.replace(/\s+/g, " ").toLowerCase());
+  return String(prompt || "").trim() === GENERIC_CONTINUE_PROMPT;
 }
 
-function continuationPrompt(text) {
+function continuationPrompt(text, preamble = AUTOMATION_NOTE) {
   const body = String(text || "").trim();
   const terminal = /\bTASK_FINISHED\b/.test(body) && /\bTASK_BLOCKED\b/.test(body)
     ? ""
     : `\n\n${CONTINUE_TERMINAL_NOTE}`;
-  return `${AUTOMATION_NOTE}\n\n${body || "continue"}${terminal}`;
+  return `${preamble}\n\n${body || "continue"}${terminal}`;
 }
+
+const WORKFLOW_REVIEW_PROMPT = continuationPrompt(
+  "Step back from the recent work. Pick the biggest source of wasted time, rework, or uncertainty that is likely to recur. Ask what you needed to decide and what evidence would have made that decision easier.\n\nRedesign the work around that evidence. Remove needless steps, change how you collect or present information, and start with an overview when it helps you see where to inspect in detail. Use the tools and hardware available. Build a custom tool or replace the whole workflow if the expected payoff warrants it.\n\nTry the strongest option on a representative case. Compare total time, including setup and interpretation, and check what evidence each approach misses. Use the approach that best serves the original goal, then keep working.",
+  "This is an automated check-in. Use your own judgment. Rework the workflow if it will materially help the remaining task. Otherwise, take the most useful next step.",
+);
+
+const HOUSEKEEPING_PROMPT = continuationPrompt(
+  `${HOUSEKEEPING_GUIDANCE} Keep the pass focused on changes that will help the remaining work. Then continue toward the original goal.`,
+  "This is an automated continuation. Use your judgment about what is worth tidying up now.",
+);
 
 function sameSubmittedPrompt(actual, expected) {
   const normalize = (text) => String(text || "").trim().replace(/\s+/g, " ");
   const sent = normalize(expected);
   const shown = normalize(actual);
-  return Boolean(sent && (shown === sent || shown.replace(/^@?(?:devspace|spacedev)\s+/i, "") === sent));
+  if (!sent) return false;
+  if (shown === sent) return true;
+  const custom = String(settings?.pluginName || "").trim().toLowerCase().replace(/[^a-z0-9\s]+/g, "").replace(/\s+/g, "\\s*");
+  const pattern = new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})\\s+`, "i");
+  return shown.replace(pattern, "") === sent;
 }
 
 function handoffPrompt() {
-  return varySpacing(settings.handoffPrompt.replace(HANDOFF_OPENERS[0], choose(HANDOFF_OPENERS)));
+  return addGoalContract(settings.handoffPrompt);
 }
-
-const LEGACY_CONTINUE_PROMPTS = new Set([
-  "Continue the original task only if meaningful work remains. Reassess the real goal, hard constraints, current evidence, and largest remaining gap, then choose the highest-value next move yourself. Use available files, tools, experiments, or research the internet and papers and good quality recourses as needed, act on the decision, and verify the result. Preserve user decisions, but change direction when evidence supports a better approach. Do not merely summarize, report status, repeat settled work without reason, or invent work after the goal is complete.",
-]);
 
 const STARTER_CONTINUE_PRESETS = [
   DEFAULT_SETTINGS.continuePrompt,
@@ -143,12 +134,12 @@ const DIAGNOSTIC_EVENTS = new Set([
   "handoff-delivered",
   "heartbeat",
 ]);
-const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "handoff", "blocked-review", "none"]);
+const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
 const CONTENT_DIAGNOSTIC_REASONS = new Set([
   "timer-started", "notice-or-generation-ended", "notice-disappeared", "generation-ended", "monitor-reset",
   "configured-limit", "ten-minute-limit",
   "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
-  "devspace", "permission-card", "conversation-scope",
+  "permission-card", "conversation-scope",
   "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
 ]);
 let diagnosticWrites = Promise.resolve();
@@ -159,9 +150,13 @@ let settings = { ...DEFAULT_SETTINGS };
 const ready = initialize();
 
 function promptKind(action, prompt) {
-  if (action === "sendBlockedReview") return "blocked-review";
+  if (action === "sendTerminalReview") return "terminal-review";
   if (action === "sendContinue" && prompt === RECOVERY_CHECK_PROMPT) return "recovery-check";
-  if (action === "sendContinue") return isShortContinuePrompt(prompt) ? "short-continue" : "custom-continue";
+  if (action === "sendContinue") {
+    if (prompt === WORKFLOW_REVIEW_PROMPT) return "workflow-review";
+    if (prompt === HOUSEKEEPING_PROMPT) return "housekeeping";
+    return isShortContinuePrompt(prompt) ? "short-continue" : "custom-continue";
+  }
   if (action === "sendHandoff") return "handoff";
   return "none";
 }
@@ -179,15 +174,15 @@ function recordDiagnostic(event, details = {}) {
       "extended-thinking-watchdog", "extended-thinking-retry",
       "extended-thinking-handoff-priority",
       "extended-thinking-threshold", "manual-continue", "manual-handoff",
-      "incomplete-handoff", "blocked-review",
+      "incomplete-handoff", "terminal-review",
     ]),
     action: new Set([
       "sendContinue", "sendHandoff", "rotateWithHandoff",
-      "enableDevSpace", "deliverHandoff", "sendBlockedReview",
+      "deliverHandoff", "sendTerminalReview",
     ]),
     phase: new Set([
       "watching", "working", "paused", "sending-continue", "waiting-for-response",
-      "sending-handoff", "sending-block-review", "waiting-for-block-review",
+      "sending-handoff", "sending-terminal-review", "waiting-for-terminal-review",
       "waiting-for-handoff", "opening-new-chat", "threshold-waiting", "finished",
     ]),
     promptMode: DIAGNOSTIC_PROMPT_MODES,
@@ -234,34 +229,23 @@ function recordDiagnostic(event, details = {}) {
 }
 
 async function initialize() {
-  const [savedSettings, savedRuntime, legacyRuntime] = await Promise.all([
+  const [savedSettings, savedRuntime] = await Promise.all([
     chrome.storage.local.get("settings"),
     chrome.storage.local.get("runtime"),
-    chrome.storage.session.get("runtime"),
   ]);
 
   settings = { ...DEFAULT_SETTINGS, ...(savedSettings.settings || {}) };
+  if (typeof settings.pluginName !== "string" || !settings.pluginName.trim()) {
+    settings.pluginName = DEFAULT_SETTINGS.pluginName;
+  }
   let settingsChanged = false;
 
-  const migratedTabIds = Array.isArray(settings.targetTabIds)
-    ? settings.targetTabIds.filter(Number.isInteger)
+  settings.targetTabIds = Array.isArray(settings.targetTabIds)
+    ? [...new Set(settings.targetTabIds.filter(Number.isInteger))]
     : [];
-  if (settings.enabled && Number.isInteger(settings.targetTabId)) {
-    migratedTabIds.push(settings.targetTabId);
-    settingsChanged = true;
-  }
-  settings.targetTabIds = [...new Set(migratedTabIds)];
-  settings.targetTabId = null;
   settings.enabled = settings.targetTabIds.length > 0;
 
-  if ("savedGoal" in settings || !Array.isArray(settings.continuePresets)) settingsChanged = true;
-  delete settings.savedGoal;
   settings.handoffPrompt = DEFAULT_SETTINGS.handoffPrompt;
-  delete settings.blockedPrompt;
-  if (LEGACY_CONTINUE_PROMPTS.has(settings.continuePrompt)) {
-    settings.continuePrompt = DEFAULT_SETTINGS.continuePrompt;
-    settingsChanged = true;
-  }
   const previousPresets = settings.continuePresets;
   settings.continuePresets = STARTER_CONTINUE_PRESETS.map((starter, index) =>
     customContinueText(settings.continuePresets?.[index] || (index === 0 ? settings.continuePrompt : starter)).slice(0, 12000) || starter,
@@ -274,12 +258,6 @@ async function initialize() {
   const tabProfiles = {};
   for (const [id, profile] of Object.entries(settings.tabContinuePresets || {})) {
     if (!/^\d+$/.test(id) || !Number.isInteger(profile?.index) || profile.index < 0 || profile.index > 3) continue;
-    // Preserve the selected text from the former per-tab copies when migrating.
-    const selectedText = profile.presets?.[profile.index];
-    if (typeof selectedText === "string" && selectedText.trim()) {
-      settings.continuePresets[profile.index] = customContinueText(selectedText).slice(0, 12000) || settings.continuePresets[profile.index];
-      settingsChanged = true;
-    }
     tabProfiles[id] = { index: profile.index };
   }
   settings.tabContinuePresets = tabProfiles;
@@ -288,18 +266,30 @@ async function initialize() {
     await chrome.storage.local.set({ settings });
   }
 
-  const runtime = savedRuntime.runtime || legacyRuntime.runtime || {};
+  const runtime = savedRuntime.runtime || {};
   for (const [tabId, state] of Object.entries(runtime.states || {})) {
     const id = Number(tabId);
     state.tabId = id;
-    delete state.taskNote;
-    delete state.useSavedGoal;
-    delete state.blockReviewSent;
-    delete state.handoffWasBlocked;
-    // Keep the current blocked episode's review flag and pending phase across
-    // worker restarts. It resets only after reconsideration finds a path forward.
-    state.blockedReviewAttempted = state.blockedReviewAttempted === true
+    const blockedReviewMigration = state.blockedReviewAttempted === true
       || ["sending-block-review", "waiting-for-block-review"].includes(state.phase);
+    const persistedReviewPhase = [
+      "sending-block-review", "waiting-for-block-review",
+      "sending-terminal-review", "waiting-for-terminal-review",
+    ].includes(state.phase);
+    if (persistedReviewPhase && !state.terminalReviewPrompt && state.actionPrompt) {
+      state.terminalReviewPrompt = state.actionPrompt;
+    }
+    // 1.5.44 used blocker-only review names. Preserve an in-flight review
+    // during the 1.5.45 upgrade, then persist only the current state shape.
+    if (state.phase === "sending-block-review") state.phase = "sending-terminal-review";
+    if (state.phase === "waiting-for-block-review") state.phase = "waiting-for-terminal-review";
+    state.terminalReviewAttempted = state.terminalReviewAttempted === true
+      || blockedReviewMigration
+      || ["sending-terminal-review", "waiting-for-terminal-review"].includes(state.phase);
+    if (!state.terminalReviewKind && blockedReviewMigration) {
+      state.terminalReviewKind = "blocked";
+    }
+    delete state.blockedReviewAttempted;
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -308,14 +298,7 @@ async function initialize() {
     states.set(id, state);
   }
   for (const [tabId, handoff] of Object.entries(runtime.pendingHandoffs || {})) {
-    delete handoff.taskNote;
-    delete handoff.useSavedGoal;
     pendingHandoffs.set(Number(tabId), handoff);
-  }
-  if (runtime.pendingHandoff?.tabId) {
-    delete runtime.pendingHandoff.taskNote;
-    delete runtime.pendingHandoff.useSavedGoal;
-    pendingHandoffs.set(runtime.pendingHandoff.tabId, runtime.pendingHandoff);
   }
   await persistRuntime();
   syncKeepAwake();
@@ -398,7 +381,9 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
     activeStartedAt: null,
     historyScanned: false,
     lastResponseKey: "",
-    blockedReviewAttempted: false,
+    terminalReviewAttempted: false,
+    terminalReviewKind: "",
+    terminalReviewPrompt: "",
     lastRecoveryKey: "",
     issue: "",
     handoffShortRetryUsed: false,
@@ -496,7 +481,7 @@ function nextAction(state, phase, name, prompt) {
   return { action: name, prompt };
 }
 
-function requestHandoff(state, prompt = addGoalContract(handoffPrompt()), source = "automatic") {
+function requestHandoff(state, prompt = handoffPrompt(), source = "automatic") {
   state.pendingNormalContinue = null;
   if (!handoffInProgress(state) && source !== "incomplete-handoff") {
     state.handoffShortRetryUsed = false;
@@ -512,7 +497,7 @@ function completedHandoffAction(state, text, substantive) {
   if (!state.handoffShortRetryUsed) {
     void recordDiagnostic("handoff-incomplete", { tabId: state.tabId, attempt: 1 });
     state.handoffShortRetryUsed = true;
-    return requestHandoff(state, addGoalContract(handoffPrompt()), "incomplete-handoff");
+    return requestHandoff(state, handoffPrompt(), "incomplete-handoff");
   }
   state.phase = "waiting-for-handoff";
   void recordDiagnostic("handoff-incomplete", { tabId: state.tabId, attempt: 2 });
@@ -537,20 +522,29 @@ function requestContinue(state, prompt, source = "automatic") {
     const custom = customContinueText(continuePromptForTab(state.tabId));
     const useCustom = custom !== state.lastCustomContinue || !(state.genericContinuesRemaining > 0);
     state.pendingNormalContinue = { custom, useCustom };
-    prompt = continuationPrompt(useCustom ? custom : "continue");
+    if (useCustom) prompt = continuationPrompt(custom);
+    else if (settings.reviewWorkflow && state.genericContinuesRemaining === 2) prompt = WORKFLOW_REVIEW_PROMPT;
+    else if (settings.reviewWorkflow && state.genericContinuesRemaining === 1) prompt = HOUSEKEEPING_PROMPT;
+    else prompt = GENERIC_CONTINUE_PROMPT;
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
 }
 
-function requestBlockedReview(state, source = "blocked-review") {
+function terminalReviewPromptFor(kind) {
+  return kind === "blocked" ? BLOCKED_REVIEW_PROMPT : FINISHED_REVIEW_PROMPT;
+}
+
+function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kind), source = "terminal-review") {
   // Mark the attempt before dispatch so a restart cannot start a second
   // reconsideration. It does not consume the normal continuation cadence.
-  state.blockedReviewAttempted = true;
+  state.terminalReviewAttempted = true;
+  state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
+  state.terminalReviewPrompt = prompt;
   state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = "";
   state.nextActionSource = source;
-  return nextAction(state, "sending-block-review", "sendBlockedReview", BLOCKED_REVIEW_PROMPT);
+  return nextAction(state, "sending-terminal-review", "sendTerminalReview", prompt);
 }
 
 function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
@@ -562,7 +556,7 @@ function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
 
 function requestAutomaticFollowUp(state, source = "completed-response") {
   return thresholdReached(state)
-    ? requestHandoff(state, addGoalContract(handoffPrompt()), source)
+    ? requestHandoff(state, handoffPrompt(), source)
     : requestContinue(state, undefined, source);
 }
 
@@ -576,14 +570,15 @@ function markTransientActionAccepted(state) {
     const { custom, useCustom } = state.pendingNormalContinue;
     if (useCustom) {
       state.lastCustomContinue = custom;
-      state.genericContinuesRemaining = 2;
+      state.genericContinuesRemaining = settings.reviewWorkflow ? 3 : 2;
     } else {
-      state.genericContinuesRemaining = Math.max(0, state.genericContinuesRemaining - 1);
+      const remaining = settings.reviewWorkflow ? state.genericContinuesRemaining : Math.min(2, state.genericContinuesRemaining);
+      state.genericContinuesRemaining = Math.max(0, remaining - 1);
     }
     state.pendingNormalContinue = null;
   }
   if (state.phase === "sending-handoff") state.phase = "waiting-for-handoff";
-  if (state.phase === "sending-block-review") state.phase = "waiting-for-block-review";
+  if (state.phase === "sending-terminal-review") state.phase = "waiting-for-terminal-review";
   if (state.phase === "sending-continue") state.phase = "waiting-for-response";
   state.actionStartedAt = null;
   state.actionPrompt = "";
@@ -593,17 +588,22 @@ function markTransientActionAccepted(state) {
 }
 
 function transientActionTimedOut(state, now = Date.now()) {
-  return ["sending-continue", "sending-handoff", "sending-block-review"].includes(state?.phase)
+  return ["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state?.phase)
     && (!state.actionStartedAt || now - state.actionStartedAt >= 30000);
 }
 
 function retryTransientAction(state) {
-  if (state.phase === "sending-block-review") return requestBlockedReview(state, "action-retry");
+  if (state.phase === "sending-terminal-review") return requestTerminalReview(
+    state,
+    state.terminalReviewKind,
+    state.terminalReviewPrompt || state.actionPrompt || terminalReviewPromptFor(state.terminalReviewKind),
+    "action-retry",
+  );
   if (state.phase === "waiting-for-handoff" && state.handoffShortRetryUsed) {
-    return requestHandoff(state, addGoalContract(handoffPrompt()), "incomplete-handoff");
+    return requestHandoff(state, handoffPrompt(), "incomplete-handoff");
   }
   if (state.phase === "sending-handoff") {
-    return requestHandoff(state, state.actionPrompt || addGoalContract(handoffPrompt()), "action-retry");
+    return requestHandoff(state, state.actionPrompt || handoffPrompt(), "action-retry");
   }
   if (state.phase === "sending-continue" && state.actionPrompt) return requestContinue(
     state,
@@ -720,6 +720,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const previousEnforcement = settings.enforceModelPreferences;
       settings = {
         ...settings,
+        reviewWorkflow: typeof message.settings?.reviewWorkflow === "boolean"
+          ? message.settings.reviewWorkflow : settings.reviewWorkflow,
         enforceModelPreferences: typeof message.settings?.enforceModelPreferences === "boolean"
           ? message.settings.enforceModelPreferences : settings.enforceModelPreferences,
         preferredModel: typeof message.settings?.preferredModel === "string"
@@ -728,6 +730,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ? message.settings.preferredReasoning : settings.preferredReasoning,
         thresholdMinutes: Math.min(720, Math.max(1, Number(message.settings?.thresholdMinutes) || settings.thresholdMinutes || 130)),
         thinkingMinutes: Math.min(60, Math.max(1, Number(message.settings?.thinkingMinutes) || settings.thinkingMinutes || 10)),
+        pluginName: typeof message.settings?.pluginName === "string"
+          ? (message.settings.pluginName.trim().slice(0, 80) || DEFAULT_SETTINGS.pluginName)
+          : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
       if (previousModel !== settings.preferredModel || previousReasoning !== settings.preferredReasoning
           || previousEnforcement !== settings.enforceModelPreferences) {
@@ -758,7 +763,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const profile = { presets: [...current.presets], index };
       if (typeof message.text === "string") {
         const text = customContinueText(message.text).slice(0, 12000);
-        if (!text) {
+        if (!text.trim()) {
           sendResponse({ ok: false, error: "The continue prompt cannot be empty." });
           return;
         }
@@ -837,7 +842,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const state = isCurrentTab ? states.get(tabId) : null;
       const lastSeen = isCurrentTab ? lastSeenAt.get(tabId) || 0 : 0;
       const stale = isCurrentTab && Date.now() - lastSeen >= 15000;
-      const recoveryProtected = ["sending-continue", "sending-handoff", "sending-block-review"].includes(state?.phase)
+      const recoveryProtected = ["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state?.phase)
         && !transientActionTimedOut(state);
       const lastAttempt = lastRecoveryAttemptAt.get(tabId) || 0;
       if (stale && !recoveryProtected && Date.now() - lastAttempt >= 10000) {
@@ -881,14 +886,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.paused = paused;
       if (!paused && (state.resumeContinuePending || state.taskStatus === "finished" || state.taskStatus === "blocked")) {
         state.taskStatus = "ongoing";
-        // A deliberate user Resume starts a new blocked episode budget.
-        state.blockedReviewAttempted = false;
+        // A deliberate user Resume starts a new terminal-review budget.
+        state.terminalReviewAttempted = false;
+        state.terminalReviewKind = "";
         state.resumeContinuePending = true;
         state.resumePhase = null;
         state.retryAt = null;
         state.actionStartedAt = null;
         state.actionPrompt = "";
         state.recoveryCheckPrompt = "";
+        state.terminalReviewPrompt = "";
         state.issue = "";
       }
       state.phase = paused ? "paused" : state.resumePhase || "watching";
@@ -913,8 +920,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.lastRecoveryKey = "";
       state.lastRecoveryAt = null;
       state.recoveryStreak = 0;
-      const pendingAction = ["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase);
-      if (!pendingAction && state.phase !== "waiting-for-block-review") state.phase = "watching";
+      const pendingAction = ["sending-handoff", "sending-continue", "sending-terminal-review"].includes(state.phase);
+      if (!pendingAction && state.phase !== "waiting-for-terminal-review") state.phase = "watching";
       state.sendFailures = 0;
       state.retryAt = pendingAction ? Date.now() : null;
       state.issue = "";
@@ -974,7 +981,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.resumePhase = null;
           await recordDiagnostic("pause-changed", { tabId, reason: "resumed", phase: state.phase });
         }
-        const manualHandoffPrompt = addGoalContract(handoffPrompt());
+        const manualHandoffPrompt = handoffPrompt();
         state.recoveryCheckPrompt = "";
             state.handoffShortRetryUsed = false;
         requestHandoff(state, manualHandoffPrompt, "manual-handoff");
@@ -1112,7 +1119,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
         thinkingMinutes: settings.thinkingMinutes,
         enforceModelPreferences: settings.enforceModelPreferences !== false,
-        preferredModel: settings.preferredModel, preferredReasoning: settings.preferredReasoning });
+        preferredModel: settings.preferredModel, preferredReasoning: settings.preferredReasoning,
+        pluginName: settings.pluginName || DEFAULT_SETTINGS.pluginName });
       return;
     }
 
@@ -1211,7 +1219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } else {
             state.issue = "";
             state.sendFailures = 0;
-            if (["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase)) state.retryAt = Date.now();
+            if (["sending-handoff", "sending-continue", "sending-terminal-review"].includes(state.phase)) state.retryAt = Date.now();
           }
           await persistRuntime();
         }
@@ -1280,7 +1288,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "monitor-not-ready": "The monitor was no longer ready to send.",
             "composer-blocked": "ChatGPT became busy before the prompt could be sent.",
             "composer-has-draft": "The composer contains a different unsent draft. Clear it or send it manually, then Retry.",
-            "plugin-selection-lost": "DevSpace was deselected before sending. Reconnect it, then Retry.",
+            "plugin-selection-lost": "The configured plugin was not selected before sending. Reconnect it, then Retry.",
             "composer-insert-failed": "Could not insert the prompt into ChatGPT's composer. Refresh ChatGPT, then Retry.",
             "composer-text-mismatch": "ChatGPT did not retain the inserted prompt text. Refresh ChatGPT, then Retry.",
             "model-preference": "Could not verify the selected model before sending. Check the model settings.",
@@ -1303,13 +1311,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
           }
           const pendingHandoff = pendingHandoffs.get(tabId);
-          if (pendingHandoff && ["enableDevSpace", "deliverHandoff"].includes(message.action)) {
+          if (pendingHandoff && message.action === "deliverHandoff") {
             pendingHandoff.deliveryFailed = true;
             pendingHandoff.attempts = (pendingHandoff.attempts || 0) + 1;
             pendingHandoff.retryAt = pendingHandoff.attempts < 3
               ? Date.now() + 30000 * pendingHandoff.attempts : null;
           }
-          const retryable = ["sendHandoff", "sendContinue", "sendBlockedReview"].includes(message.action);
+          const retryable = ["sendHandoff", "sendContinue", "sendTerminalReview"].includes(message.action);
           if (retryable) {
             state.sendFailures = (state.sendFailures || 0) + 1;
             state.retryAt = state.sendFailures < 3 ? Date.now() + 30000 * state.sendFailures : null;
@@ -1325,7 +1333,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           const issueByAction = {
             rotateWithHandoff: "Could not capture the handoff.",
-            enableDevSpace: "Could not enable DevSpace in the fresh chat.",
             deliverHandoff: "Could not submit the handoff in the fresh chat.",
           };
           state.issue = state.modelPreferenceIssue
@@ -1400,10 +1407,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.recoveryCheckPrompt = "";
         state.issue = "";
         changed = true;
-      } else if (["sending-handoff", "sending-continue", "sending-block-review"].includes(state.phase)) {
+      } else if (["sending-handoff", "sending-continue", "sending-terminal-review"].includes(state.phase)) {
         // Generation may belong to the previous user message (manual handoff
         // can stop it). It is not proof that our prompt was submitted.
-      } else if (state.phase === "waiting-for-block-review") {
+      } else if (state.phase === "waiting-for-terminal-review") {
         // A review response is being generated. It does not turn the review
         // into a normal working phase or trigger an early handoff.
       } else if (
@@ -1441,7 +1448,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (["sending-continue", "sending-handoff", "sending-block-review"].includes(state.phase)
+    if (["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state.phase)
         && !state.retryAt) {
       // An old response may remain visible until the submitted prompt starts
       // its own turn. Do not act on it before a real send acknowledgement.
@@ -1464,7 +1471,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (state.retryAt && (state.phase === "sending-block-review"
+    if (state.retryAt && (state.phase === "sending-terminal-review"
         || !terminalStatus(message.latestResponseText))) {
       // A missing acknowledgement is reconciled before another click.
       if (sameSubmittedPrompt(message.latestUserText, state.actionPrompt) && message.composerEmpty) {
@@ -1488,7 +1495,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // composer is idle, so recover once for this turn even without an error card.
     if (message.recoveryKey && message.recoveryKey !== state.lastRecoveryKey
         && state.taskStatus === "ongoing" && !message.latestResponseText) {
-      if (state.phase === "waiting-for-block-review") {
+      if (state.phase === "waiting-for-terminal-review") {
         state.paused = true;
         state.phase = "paused";
         state.issue = "The reconsideration reply could not be read. Check ChatGPT, then Resume if more work is possible.";
@@ -1539,14 +1546,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const isNewResponse = Boolean(
       message.responseKey && message.responseKey !== state.lastResponseKey,
     );
-    // Only the reply to our reconsideration can resolve the blocked state.
+    // Only the reply to our reconsideration can resolve the terminal review.
     // A stale assistant turn must not be accepted as the review's answer.
-    if (state.phase === "waiting-for-block-review"
-        && (!isNewResponse || !sameSubmittedPrompt(message.latestUserText, BLOCKED_REVIEW_PROMPT))) {
+    if (state.phase === "waiting-for-terminal-review"
+        && (!isNewResponse || !sameSubmittedPrompt(
+          message.latestUserText,
+          state.terminalReviewPrompt || terminalReviewPromptFor(state.terminalReviewKind),
+        ))) {
       sendResponse({});
       return;
     }
-    if (state.phase === "waiting-for-block-review" && !message.latestResponseText) {
+    if (state.phase === "waiting-for-terminal-review" && !message.latestResponseText) {
       // The review may still be mounting. Do not consume the turn or lose the
       // review state until a readable answer or a clear recovery error arrives.
       sendResponse({});
@@ -1559,11 +1569,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     const terminal = isNewResponse ? terminalStatus(message.latestResponseText) : null;
     if (terminal) {
-      if (terminal === "blocked" && !state.blockedReviewAttempted) {
+      if (!state.terminalReviewAttempted) {
         // An unsubmitted user draft must never be overwritten by automation.
         if (message.composerEmpty === false) { sendResponse({}); return; }
         state.lastResponseKey = message.responseKey;
-        const review = requestBlockedReview(state);
+        const review = requestTerminalReview(state, terminal);
         await persistRuntime();
         sendResponse(review);
         return;
@@ -1579,6 +1589,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.phase = "paused";
       state.actionStartedAt = null;
       state.actionPrompt = "";
+      state.terminalReviewKind = "";
+      state.terminalReviewPrompt = "";
       state.issue = "";
       await recordDiagnostic("pause-changed", { tabId, reason: terminal, phase: "paused" });
       await persistRuntime();
@@ -1636,11 +1648,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void recordDiagnostic("recovery-check-completed", { tabId });
       state.recoveryCheckPrompt = "";
     }
-    if (state.phase === "waiting-for-block-review") {
+    if (state.phase === "waiting-for-terminal-review") {
       // This reconsideration found a path forward. A later, genuinely new
-      // blocked completion is a new episode and gets one fresh reconsideration.
+      // terminal result is a new stop attempt and gets one fresh review.
       state.phase = "watching";
-      state.blockedReviewAttempted = false;
+      state.terminalReviewAttempted = false;
+      state.terminalReviewKind = "";
+      state.terminalReviewPrompt = "";
     }
     if (handoffInProgress(state)) {
       const result = completedHandoffAction(state, message.latestResponseText, message.latestResponseIsSubstantive);
