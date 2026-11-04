@@ -12,6 +12,7 @@ Chrome extension that continues a ChatGPT task and carries its checkpoint into a
 The cycle starts with your prompt and a Continue turn. **Review workflow** and **Housekeeping** each add their own turn after Continue. With both off, the cycle uses two Continue turns.
 
 Model, reasoning, and cycle controls apply to the current tab. Prompt text, plugin, and both timers are shared.
+Hover over the cycle number to see the current stage name.
 
 Open **Logs** to choose a folder for JSONL diagnostics or download a copy. The logs exclude chat text and page URLs.
 

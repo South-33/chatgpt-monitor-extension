@@ -523,16 +523,32 @@ function controlsForTab(tabId) {
   return settings.tabControls?.[tabId] || settings;
 }
 
+function followUpPrompts(tabId) {
+  const { reviewWorkflow, housekeeping } = controlsForTab(tabId);
+  const prompts = [GENERIC_CONTINUE_PROMPT];
+  if (reviewWorkflow) prompts.push(WORKFLOW_REVIEW_PROMPT);
+  if (housekeeping) prompts.push(HOUSEKEEPING_PROMPT);
+  if (prompts.length === 1) prompts.push(GENERIC_CONTINUE_PROMPT);
+  return prompts;
+}
+
+function cycleStage(step, followUps, prompt) {
+  const label = step === 1 ? "Custom"
+    : prompt === WORKFLOW_REVIEW_PROMPT ? "Improve workflow"
+    : prompt === HOUSEKEEPING_PROMPT ? "Housekeeping" : "Continue";
+  return { step, total: followUps.length + 1, label };
+}
+
 function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
-    const { reviewWorkflow, housekeeping } = controlsForTab(state.tabId);
+    const followUps = followUpPrompts(state.tabId);
+    const remaining = Math.min(followUps.length, state.genericContinuesRemaining);
     const custom = customContinueText(continuePromptForTab(state.tabId));
-    const useCustom = custom !== state.lastCustomContinue || !(state.genericContinuesRemaining > 0);
+    const useCustom = custom !== state.lastCustomContinue || !(remaining > 0);
+    const index = followUps.length - remaining;
     state.pendingNormalContinue = { custom, useCustom };
-    if (useCustom) prompt = continuationPrompt(custom);
-    else if (reviewWorkflow && state.genericContinuesRemaining === (housekeeping ? 2 : 1)) prompt = WORKFLOW_REVIEW_PROMPT;
-    else if (housekeeping && state.genericContinuesRemaining === 1) prompt = HOUSEKEEPING_PROMPT;
-    else prompt = GENERIC_CONTINUE_PROMPT;
+    prompt = useCustom ? continuationPrompt(custom) : followUps[index];
+    state.cycleStage = cycleStage(useCustom ? 1 : index + 2, followUps, prompt);
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
@@ -575,8 +591,7 @@ function handoffInProgress(state) {
 function markTransientActionAccepted(state) {
   if (state.phase === "sending-continue" && state.pendingNormalContinue) {
     const { custom, useCustom } = state.pendingNormalContinue;
-    const { reviewWorkflow, housekeeping } = controlsForTab(state.tabId);
-    const followUps = reviewWorkflow && housekeeping ? 3 : 2;
+    const followUps = followUpPrompts(state.tabId).length;
     if (useCustom) {
       state.lastCustomContinue = custom;
       state.genericContinuesRemaining = followUps;
@@ -868,6 +883,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastRecoveryAttemptAt.set(tabId, Date.now());
         await injectTargetTab(tabId);
       }
+      const followUps = followUpPrompts(tabId);
+      const completed = state?.lastCustomContinue
+        ? Math.max(0, followUps.length - state.genericContinuesRemaining) : 0;
       sendResponse({
         enabled: settings.enabled,
         monitoredCount: settings.targetTabIds.length,
@@ -875,6 +893,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         currentTabSupported: isChatUrl(message.url),
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
         phase: isCurrentTab ? state?.phase || "watching" : "off",
+        cycleStage: isCurrentTab
+          ? state?.cycleStage || cycleStage(completed + 1, followUps, followUps[completed - 1]) : null,
         isGenerating: Boolean(isCurrentTab && state?.activeStartedAt),
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
         extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,

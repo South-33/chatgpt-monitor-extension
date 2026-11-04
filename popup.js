@@ -17,6 +17,7 @@ const preferredReasoning = document.querySelector("#preferredReasoning");
 const enforceModelPreferences = document.querySelector("#enforceModelPreferences");
 const reviewWorkflow = document.querySelector("#reviewWorkflow");
 const housekeeping = document.querySelector("#housekeeping");
+const cycleStage = document.querySelector("#cycleStage");
 const pluginName = document.querySelector("#pluginName");
 let pendingControlWrites = 0;
 let controlSaveQueue = Promise.resolve();
@@ -136,6 +137,15 @@ function renderStatus(result) {
   currentStatus = result;
   const monitoring = result.enabled && result.isCurrentTab;
   const paused = monitoring && result.paused;
+  const stage = monitoring ? result.cycleStage : null;
+  cycleStage.hidden = !stage;
+  if (stage) {
+    const position = `${stage.step}/${stage.total}`;
+    const description = `${stage.label} · Step ${stage.step} of ${stage.total}`;
+    if (cycleStage.textContent !== position) cycleStage.textContent = position;
+    cycleStage.title = description;
+    cycleStage.setAttribute("aria-label", description);
+  }
   const value = result.status || "off";
   const thresholdSeconds = Math.max(60, Number(result.thresholdMinutes || threshold.value || 130) * 60);
   const workedSeconds = Number(result.workedSeconds) || 0;

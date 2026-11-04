@@ -55,6 +55,7 @@ const controls = Object.fromEntries([
 ].map(name => [name, {}]));
 const statusSandbox = {
   ...controls, threshold: { value: 400 }, activeTab: { url: "https://chatgpt.com/c/test" },
+  cycleStage: { setAttribute() {} },
   formatMinutes: () => "0m", renderProgress: () => "", PHASE_LABELS: {},
   isConversationUrl: () => true, logFolderName: "logs",
 };
@@ -67,3 +68,7 @@ assert.equal(controls.pauseButton.textContent, "Resume");
 assert.equal(controls.pauseButton.disabled, false, "blocked monitoring must also be resumable");
 statusSandbox.renderStatus({ ...blocked, isCurrentTab: false });
 assert.equal(controls.pauseButton.disabled, true, "do not pause another tab's monitoring");
+assert.equal(statusSandbox.cycleStage.hidden, true);
+statusSandbox.renderStatus({ ...blocked, cycleStage: { step: 4, total: 4, label: "Housekeeping" } });
+assert.equal(statusSandbox.cycleStage.textContent, "4/4");
+assert.match(statusSandbox.cycleStage.title, /Housekeeping/);

@@ -70,18 +70,20 @@ function worker() {
   assert.equal(other.reviewWorkflow, false);
   assert.equal(other.housekeeping, false);
   assert.equal(other.preferredModel, 'GPT-5.6 Sol');
-  for (const [step, expected] of [
-    ['continue', /^Automated message: Continue$/],
-    ['review', /Step back from the recent work/],
-    ['housekeeping', /Give related work one clear home/],
-    ['custom', /Work on task 4 only\./],
+  for (const [step, label, expected] of [
+    [2, 'Continue', /^Automated message: Continue$/],
+    [3, 'Improve workflow', /Step back from the recent work/],
+    [4, 'Housekeeping', /Give related work one clear home/],
+    [1, 'Custom', /Work on task 4 only\./],
   ]) {
-    if (step === 'review') harness = worker();
+    if (step === 3) harness = worker();
     const action = await harness.send({ type: 'status', url: reviewUrl, isGenerating: false,
       responseKey: `workflow-${step}`, latestResponseText: 'More work remains.',
     }, reviewSender);
     assert.match(action.prompt, expected);
     await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+    const { cycleStage } = await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl });
+    assert.deepEqual({ ...cycleStage }, { step, total: 4, label });
   }
   // Only successful deliveries count, with independent cycles for each thread.
   const cycleUrl = 'https://chatgpt.com/c/2';
