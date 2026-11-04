@@ -83,6 +83,11 @@ const HOUSEKEEPING_PROMPT = continuationPrompt(
   "This is an automated continuation. Use your judgment about what is worth tidying up now.",
 );
 
+const ON_DEMAND_PROMPTS = new Map([
+  ["improve", WORKFLOW_REVIEW_PROMPT],
+  ["housekeeping", HOUSEKEEPING_PROMPT],
+]);
+
 function sameSubmittedPrompt(actual, expected) {
   const normalize = (text) => String(text || "").trim().replace(/\s+/g, " ");
   const sent = normalize(expected);
@@ -936,6 +941,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
         phase: isCurrentTab ? state?.phase || "watching" : "off",
         cycleStage: isCurrentTab ? { ...stage, total: Math.max(stage.step, followUps.length + 1) } : null,
+        queuedPrompt: state?.queuedPrompt || "",
         isGenerating: Boolean(isCurrentTab && state?.activeStartedAt),
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
         extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,
@@ -982,6 +988,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await persistRuntime();
       await recordDiagnostic("pause-changed", { tabId, reason: paused ? "paused" : "resumed", phase: state.phase });
       sendResponse({ ok: true, paused: state.paused });
+      return;
+    }
+
+    if (message.type === "queueCyclePrompt") {
+      const tabId = Number(message.tabId);
+      const state = targetMatches(tabId) ? states.get(tabId) : null;
+      if (!state || state.paused || state.taskStatus !== "ongoing"
+          || !isConversationUrl(message.url) || conversationKey(message.url) !== state.conversationKey
+          || !ON_DEMAND_PROMPTS.has(message.kind)) {
+        sendResponse({ ok: false, error: "Open a monitored chat and resume it first." });
+        return;
+      }
+      state.queuedPrompt = state.queuedPrompt === message.kind ? "" : message.kind;
+      await persistRuntime();
+      sendResponse({ ok: true });
       return;
     }
 
@@ -1698,10 +1719,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.actionPrompt = "";
       state.terminalReviewKind = "";
       state.terminalReviewPrompt = "";
+      state.queuedPrompt = "";
       state.issue = "";
       await recordDiagnostic("pause-changed", { tabId, reason: terminal, phase: "paused" });
       await persistRuntime();
       sendResponse({});
+      return;
+    }
+
+    const queuedPrompt = ON_DEMAND_PROMPTS.get(state.queuedPrompt);
+    if (queuedPrompt && (!state.recoveryCheckPrompt || (isNewResponse && message.latestResponseText))
+        && ["watching", "working", "waiting-for-response", "threshold-waiting"].includes(state.phase)) {
+      if (message.composerEmpty !== true) { sendResponse({}); return; }
+      if (state.recoveryCheckPrompt) {
+        void recordDiagnostic("recovery-check-completed", { tabId });
+        state.recoveryCheckPrompt = "";
+      }
+      state.queuedPrompt = "";
+      state.pendingNormalContinue = null;
+      if (message.responseKey) state.lastResponseKey = message.responseKey;
+      const action = requestContinue(state, queuedPrompt, "manual-continue");
+      await persistRuntime();
+      sendResponse(action);
       return;
     }
 

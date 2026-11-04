@@ -109,6 +109,19 @@ function worker() {
     const { cycleStage } = await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl });
     assert.deepEqual({ ...cycleStage }, { step, total: 6, label });
   }
+  const queue = { type: 'queueCyclePrompt', tabId: 4, url: reviewUrl, kind: 'housekeeping' };
+  assert.equal((await harness.send(queue)).ok, true);
+  assert.equal((await harness.send(queue)).ok, true, 'clicking again cancels the queued prompt');
+  assert.equal((await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl })).queuedPrompt, '');
+  await harness.send(queue);
+  const idle = { type: 'status', url: reviewUrl, responseKey: 'manual-next',
+    latestResponseText: 'More work remains.', composerEmpty: true };
+  assert.equal((await harness.send({ ...idle, isGenerating: true }, reviewSender)).action, undefined);
+  assert.equal((await harness.send({ ...idle, composerEmpty: false }, reviewSender)).action, undefined);
+  const onDemand = await harness.send(idle, reviewSender);
+  assert.match(onDemand.prompt, /Give related work one clear home/);
+  await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+  assert.equal((await readStage()).step, 1, 'on-demand prompts do not advance the automatic cycle');
   // Only successful deliveries count, with independent cycles for each thread.
   const cycleUrl = 'https://chatgpt.com/c/2';
   const cycleSender = { tab: { id: 2, url: cycleUrl } };

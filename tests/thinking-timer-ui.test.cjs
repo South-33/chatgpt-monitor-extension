@@ -56,6 +56,7 @@ const controls = Object.fromEntries([
 const statusSandbox = {
   ...controls, threshold: { value: 400 }, activeTab: { url: "https://chatgpt.com/c/test" },
   cycleStage: { setAttribute() {} },
+  sendNowButtons: [],
   formatMinutes: () => "0m", renderProgress: () => "", PHASE_LABELS: {},
   isConversationUrl: () => true, logFolderName: "logs",
 };

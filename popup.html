@@ -44,9 +44,12 @@
       .model-row { grid-template-columns: auto minmax(0, 1fr) 112px; align-items: end; margin-bottom: 6px; }
       .model-toggle { display: grid; place-items: center; width: 28px; height: 30px; cursor: pointer; }
       .model-toggle input { margin: 0; width: 15px; height: 15px; accent-color: var(--accent); }
-      .workflow-toggle { display: flex; align-items: center; gap: 6px; width: fit-content; margin-top: 6px; cursor: pointer; }
+      .workflow-toggle, .cycle-option { display: flex; align-items: center; gap: 6px; }
+      .workflow-toggle { cursor: pointer; }
       .workflow-toggle input { margin: 0; accent-color: var(--accent); }
-      .cycle-options { display: flex; align-items: baseline; gap: 16px; }
+      .cycle-options { display: flex; align-items: center; gap: 12px; margin-top: 5px; }
+      .send-now { width: 24px; height: 24px; padding: 0; border-radius: 5px; background: var(--surface); color: var(--accent); }
+      .send-now[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
       #cycleStage { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
       .field { display: grid; gap: 2px; min-width: 0; color: var(--muted); font-size: 11px; }
       .field :is(input, select) { width: 100%; min-width: 0; height: 30px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface); font-size: 13px; }
@@ -84,8 +87,14 @@
         <label class="field" for="pluginName">Plugin <input id="pluginName" type="text" placeholder="DevSpace" spellcheck="false" disabled /></label>
       </div>
       <div class="cycle-options">
-        <label class="workflow-toggle"><input id="reviewWorkflow" type="checkbox" disabled /> Improve</label>
-        <label class="workflow-toggle"><input id="housekeeping" type="checkbox" disabled /> Housekeeping</label>
+        <div class="cycle-option">
+          <label class="workflow-toggle"><input id="reviewWorkflow" type="checkbox" disabled /> Improve</label>
+          <button class="send-now" type="button" data-send-now="improve" aria-label="Send Improve" title="Send Improve" aria-pressed="false" disabled>↗</button>
+        </div>
+        <div class="cycle-option">
+          <label class="workflow-toggle"><input id="housekeeping" type="checkbox" disabled /> Housekeeping</label>
+          <button class="send-now" type="button" data-send-now="housekeeping" aria-label="Send Housekeeping" title="Send Housekeeping" aria-pressed="false" disabled>↗</button>
+        </div>
         <span id="cycleStage" role="status" hidden></span>
       </div>
     </section>

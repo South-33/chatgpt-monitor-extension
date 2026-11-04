@@ -18,6 +18,7 @@ const enforceModelPreferences = document.querySelector("#enforceModelPreferences
 const reviewWorkflow = document.querySelector("#reviewWorkflow");
 const housekeeping = document.querySelector("#housekeeping");
 const cycleStage = document.querySelector("#cycleStage");
+const sendNowButtons = document.querySelectorAll("[data-send-now]");
 const pluginName = document.querySelector("#pluginName");
 let pendingControlWrites = 0;
 let controlSaveQueue = Promise.resolve();
@@ -147,6 +148,12 @@ function renderStatus(result) {
     cycleStage.setAttribute("aria-label", description);
   }
   const value = result.status || "off";
+  for (const button of sendNowButtons) {
+    button.disabled = !monitoring || paused || value !== "ongoing" || !isConversationUrl(activeTab?.url);
+    const queued = result.queuedPrompt === button.dataset.sendNow;
+    button.setAttribute("aria-pressed", String(queued));
+    button.title = queued ? "Queued. Click to cancel." : button.getAttribute("aria-label");
+  }
   const thresholdSeconds = Math.max(60, Number(result.thresholdMinutes || threshold.value || 130) * 60);
   const workedSeconds = Number(result.workedSeconds) || 0;
   workedText.textContent = `${formatMinutes(workedSeconds)} / ${Math.round(thresholdSeconds / 60)}m`;
@@ -370,9 +377,9 @@ pauseButton.addEventListener("click", async () => {
   await refreshStatus();
 });
 
-async function runAction(type, failure) {
+async function runAction(type, failure, details = {}) {
   try {
-    const result = await chrome.runtime.sendMessage({ type, tabId: activeTab?.id });
+    const result = await chrome.runtime.sendMessage({ type, tabId: activeTab?.id, ...details });
     if (!result?.ok) showNotice(result?.error || failure, true);
   } catch { showNotice(failure, true); }
   await refreshStatus();
@@ -380,6 +387,14 @@ async function runAction(type, failure) {
 
 swapButton.addEventListener("click", () => runAction("manualSwap", "Could not start the handoff."));
 retryButton.addEventListener("click", () => runAction("retryNow", "Could not retry."));
+for (const button of sendNowButtons) {
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    void runAction("queueCyclePrompt", "Could not queue prompt.", {
+      kind: button.dataset.sendNow, url: activeTab?.url,
+    });
+  });
+}
 
 presetSlots.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-preset]");
