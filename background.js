@@ -523,8 +523,7 @@ function controlsForTab(tabId) {
   return settings.tabControls?.[tabId] || settings;
 }
 
-function followUpPrompts(tabId) {
-  const { reviewWorkflow, housekeeping } = controlsForTab(tabId);
+function followUpPrompts({ reviewWorkflow, housekeeping }) {
   const prompts = [GENERIC_CONTINUE_PROMPT];
   if (reviewWorkflow) prompts.push(WORKFLOW_REVIEW_PROMPT);
   if (housekeeping) prompts.push(HOUSEKEEPING_PROMPT);
@@ -541,7 +540,7 @@ function cycleStage(step, followUps, prompt) {
 
 function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
-    const followUps = followUpPrompts(state.tabId);
+    const followUps = followUpPrompts(controlsForTab(state.tabId));
     const remaining = Math.min(followUps.length, state.genericContinuesRemaining);
     const custom = customContinueText(continuePromptForTab(state.tabId));
     const useCustom = custom !== state.lastCustomContinue || !(remaining > 0);
@@ -591,7 +590,7 @@ function handoffInProgress(state) {
 function markTransientActionAccepted(state) {
   if (state.phase === "sending-continue" && state.pendingNormalContinue) {
     const { custom, useCustom } = state.pendingNormalContinue;
-    const followUps = followUpPrompts(state.tabId).length;
+    const followUps = followUpPrompts(controlsForTab(state.tabId)).length;
     if (useCustom) {
       state.lastCustomContinue = custom;
       state.genericContinuesRemaining = followUps;
@@ -767,12 +766,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
       if (tabId !== undefined) settings.tabControls[tabId] = controls;
-      if (previous.preferredModel !== controls.preferredModel || previous.preferredReasoning !== controls.preferredReasoning
-          || previous.enforceModelPreferences !== controls.enforceModelPreferences) {
+      const oldFollowUps = followUpPrompts(previous);
+      const oldCount = oldFollowUps.length;
+      const newCount = followUpPrompts(controls).length;
+      const modelChanged = previous.preferredModel !== controls.preferredModel
+        || previous.preferredReasoning !== controls.preferredReasoning
+        || previous.enforceModelPreferences !== controls.enforceModelPreferences;
+      if (modelChanged || oldCount !== newCount) {
         for (const state of states.values()) {
           if (tabId !== undefined && state.tabId !== tabId) continue;
-          if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
-          state.modelPreferenceIssue = "";
+          if (tabId === undefined && settings.tabControls?.[state.tabId]) continue;
+          if (oldCount !== newCount && state.lastCustomContinue) {
+            const completed = Math.max(0, oldCount - state.genericContinuesRemaining);
+            state.cycleStage ??= cycleStage(completed + 1, oldFollowUps, oldFollowUps[completed - 1]);
+            state.genericContinuesRemaining = Math.max(0, newCount - completed);
+          }
+          if (modelChanged) {
+            if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
+            state.modelPreferenceIssue = "";
+          }
         }
         await persistRuntime();
       }
@@ -883,9 +895,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastRecoveryAttemptAt.set(tabId, Date.now());
         await injectTargetTab(tabId);
       }
-      const followUps = followUpPrompts(tabId);
+      const followUps = followUpPrompts(controlsForTab(tabId));
       const completed = state?.lastCustomContinue
         ? Math.max(0, followUps.length - state.genericContinuesRemaining) : 0;
+      const stage = state?.cycleStage || cycleStage(completed + 1, followUps, followUps[completed - 1]);
       sendResponse({
         enabled: settings.enabled,
         monitoredCount: settings.targetTabIds.length,
@@ -893,8 +906,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         currentTabSupported: isChatUrl(message.url),
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
         phase: isCurrentTab ? state?.phase || "watching" : "off",
-        cycleStage: isCurrentTab
-          ? state?.cycleStage || cycleStage(completed + 1, followUps, followUps[completed - 1]) : null,
+        cycleStage: isCurrentTab ? { ...stage, total: Math.max(stage.step, followUps.length + 1) } : null,
         isGenerating: Boolean(isCurrentTab && state?.activeStartedAt),
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
         extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,

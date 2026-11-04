@@ -35,7 +35,7 @@ function worker() {
   })));
   for (const tabId of [1, 2, 3, 4]) {
     if (tabId === 4) await harness.send({ type: 'saveSettings', tabId, settings: {
-      reviewWorkflow: true, housekeeping: true, preferredModel: 'GPT-6', preferredReasoning: 'medium',
+      reviewWorkflow: true, preferredModel: 'GPT-6', preferredReasoning: 'medium',
       enforceModelPreferences: false,
     } });
     const settings = (await harness.send({ type: 'getSettings', tabId })).settings;
@@ -62,6 +62,12 @@ function worker() {
     'monitoring selected tabs must not enroll other open tabs');
   const reviewUrl = 'https://chatgpt.com/c/4';
   const reviewSender = { tab: { id: 4, url: reviewUrl } };
+  delete local.runtime.states[4].cycleStage;
+  harness = worker();
+  const readStage = async () => (await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl })).cycleStage;
+  assert.deepEqual({ ...await readStage() }, { step: 1, total: 3, label: 'Custom' });
+  await harness.send({ type: 'saveSettings', tabId: 4, settings: { housekeeping: true } });
+  assert.deepEqual({ ...await readStage() }, { step: 1, total: 4, label: 'Custom' });
   const ownership = await harness.send({ type: 'isTargetTab' }, reviewSender);
   assert.equal(ownership.preferredModel, 'GPT-6');
   assert.equal(ownership.preferredReasoning, 'medium');
