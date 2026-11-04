@@ -78,7 +78,7 @@ function worker() {
   assert.equal(other.preferredModel, 'GPT-5.6 Sol');
   for (const [step, label, expected] of [
     [2, 'Continue', /^Automated message: Continue$/],
-    [3, 'Improve workflow', /Step back from the recent work/],
+    [3, 'Improve harness', /Improve the agent harness/],
     [4, 'Follow-through', /finish the useful work before moving on/],
     [5, 'Housekeeping', /Give related work one clear home/],
     [6, 'Follow-through', /finish the useful work before moving on/],

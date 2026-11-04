@@ -74,8 +74,8 @@ function continuationPrompt(text, preamble = AUTOMATION_NOTE) {
 }
 
 const WORKFLOW_REVIEW_PROMPT = continuationPrompt(
-  "Step back from the recent work. Pick the biggest source of wasted time, rework, or uncertainty that is likely to recur. Ask what you needed to decide and what evidence would have made that decision easier.\n\nRedesign the work around that evidence. Remove needless steps, change how you collect or present information, and start with an overview when it helps you see where to inspect in detail. Use the tools and hardware available. Build a custom tool or replace the whole workflow if the expected payoff warrants it.\n\nTry the strongest option on a representative case. Compare total time, including setup and interpretation, and check what evidence each approach misses. Use the approach that best serves the original goal, then keep working.",
-  "This is an automated check-in. Use your own judgment. Rework the workflow if it will materially help the remaining task. Otherwise, take the most useful next step.",
+  "Review the recent tool calls. Find the recurring bottleneck that costs the agent the most time, context, or rework. Look for slow commands, repeated calls, noisy output, and missing evidence that makes decisions harder.\n\nChange the tools or how the agent uses them. Remove or batch calls, reuse work, return a compact overview with details on demand, or make failures easier to diagnose. Build a custom tool or replace part of the harness when the remaining work justifies it. Prioritize changes that make the agent faster or more reliable.\n\nRun the old and new approaches on a representative case. Compare elapsed time, tool calls, or output size, including setup and interpretation. Check that the new approach preserves the evidence and accuracy the task needs. Use the improvement in the next real step toward the original goal.",
+  "This is an automated check-in. Use your judgment. Improve the agent harness, meaning the tools, scripts, and feedback the model uses to do the work, when the change will materially help the remaining task. Otherwise, continue the original task.",
 );
 
 const HOUSEKEEPING_PROMPT = continuationPrompt(
@@ -562,7 +562,7 @@ function followUpPrompts({ reviewWorkflow, housekeeping }) {
 
 function cycleStage(step, followUps, prompt) {
   const label = step === 1 ? "Custom"
-    : prompt === WORKFLOW_REVIEW_PROMPT ? "Improve workflow"
+    : prompt === WORKFLOW_REVIEW_PROMPT ? "Improve harness"
     : prompt === FOLLOW_THROUGH_PROMPT ? "Follow-through"
     : prompt === HOUSEKEEPING_PROMPT ? "Housekeeping" : "Continue";
   return { step, total: followUps.length + 1, label };
