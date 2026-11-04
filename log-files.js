@@ -76,14 +76,16 @@ const AgentMonitorLogFiles = (() => {
         request.onerror = () => reject(request.error);
       });
       if (!batch.length) break;
-      const dates = new Map();
+      const files = new Map();
       for (const item of batch) {
         const date = item.entry.time.slice(0, 10);
-        if (!dates.has(date)) dates.set(date, []);
-        dates.get(date).push(item);
+        const tab = Number.isInteger(item.entry.tabId) ? `-tab-${item.entry.tabId}` : "";
+        const name = `agent-monitor-${date}${tab}.jsonl`;
+        if (!files.has(name)) files.set(name, []);
+        files.get(name).push(item);
       }
-      for (const [date, items] of dates) {
-        const fileHandle = await folder.getFileHandle(`agent-monitor-${date}.jsonl`, { create: true });
+      for (const [name, items] of files) {
+        const fileHandle = await folder.getFileHandle(name, { create: true });
         const file = await fileHandle.getFile();
         const writer = await fileHandle.createWritable({ keepExistingData: true });
         try {

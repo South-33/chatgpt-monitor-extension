@@ -172,6 +172,14 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
     'The missing validation now passes.\nTASK_FINISHED'), url: prematureUrl }, prematureUrl);
   assert.equal(laterFinish.action, 'sendTerminalReview',
     'a later stop after more work receives a fresh one-shot review');
+  await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true,
+    url: prematureUrl }, prematureUrl);
+  const unmatched = { ...status('unconfirmed-review', blocked, 'Unmatched user message'), url: prematureUrl };
+  await restarted(unmatched, prematureUrl);
+  now += 31_000;
+  assert.equal((await restarted(unmatched, prematureUrl)).action, undefined);
+  assert.equal(local.runtime.states[64].paused, true);
+  assert.match(local.runtime.states[64].issue, /Could not confirm the stop recheck reply/);
 
   console.log('terminal_review_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

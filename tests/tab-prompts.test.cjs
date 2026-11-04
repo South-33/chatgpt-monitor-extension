@@ -65,9 +65,9 @@ function worker() {
   delete local.runtime.states[4].cycleStage;
   harness = worker();
   const readStage = async () => (await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl })).cycleStage;
-  assert.deepEqual({ ...await readStage() }, { step: 1, total: 3, label: 'Custom' });
-  await harness.send({ type: 'saveSettings', tabId: 4, settings: { housekeeping: true } });
   assert.deepEqual({ ...await readStage() }, { step: 1, total: 4, label: 'Custom' });
+  await harness.send({ type: 'saveSettings', tabId: 4, settings: { housekeeping: true } });
+  assert.deepEqual({ ...await readStage() }, { step: 1, total: 6, label: 'Custom' });
   const ownership = await harness.send({ type: 'isTargetTab' }, reviewSender);
   assert.equal(ownership.preferredModel, 'GPT-6');
   assert.equal(ownership.preferredReasoning, 'medium');
@@ -79,17 +79,35 @@ function worker() {
   for (const [step, label, expected] of [
     [2, 'Continue', /^Automated message: Continue$/],
     [3, 'Improve workflow', /Step back from the recent work/],
-    [4, 'Housekeeping', /Give related work one clear home/],
+    [4, 'Follow-through', /finish the useful work before moving on/],
+    [5, 'Housekeeping', /Give related work one clear home/],
+    [6, 'Follow-through', /finish the useful work before moving on/],
     [1, 'Custom', /Work on task 4 only\./],
   ]) {
-    if (step === 3) harness = worker();
+    if (step === 3) {
+      const savedState = local.runtime.states[4];
+      delete savedState.cycleStage;
+      savedState.genericContinuesRemaining = 1;
+      harness = worker();
+      await harness.send({ type: 'status', url: reviewUrl, isGenerating: true,
+        latestUserText: 'Automated message: Continue',
+      }, reviewSender);
+      assert.deepEqual({ ...await readStage() }, { step: 2, total: 6, label: 'Continue' });
+    }
+    let latestUserText;
+    if (step === 4) {
+      const recovery = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
+      assert.ok(recovery.prompt);
+      await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+      latestUserText = recovery.prompt;
+    }
     const action = await harness.send({ type: 'status', url: reviewUrl, isGenerating: false,
-      responseKey: `workflow-${step}`, latestResponseText: 'More work remains.',
+      responseKey: `workflow-${step}`, latestResponseText: 'More work remains.', latestUserText,
     }, reviewSender);
     assert.match(action.prompt, expected);
     await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
     const { cycleStage } = await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl });
-    assert.deepEqual({ ...cycleStage }, { step, total: 4, label });
+    assert.deepEqual({ ...cycleStage }, { step, total: 6, label });
   }
   // Only successful deliveries count, with independent cycles for each thread.
   const cycleUrl = 'https://chatgpt.com/c/2';

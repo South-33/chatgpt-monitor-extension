@@ -41,6 +41,7 @@ const BLOCKED_REVIEW_PROMPT =
   `Before accepting TASK_BLOCKED, identify the exact blocker and check for a reasonable, authorized way to make progress.\n\n${HOUSEKEEPING_GUIDANCE}\n\nIf still blocked, say what you need from the user. ${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only blocker review for this stop attempt.`;
 
 const GENERIC_CONTINUE_PROMPT = "Automated message: Continue";
+const FOLLOW_THROUGH_PROMPT = "Automated message: Continue the previous step. If Improve or Housekeeping is still in progress, pick up where you left off and finish the useful work before moving on. If that step is complete, continue toward the original goal.";
 
 function customContinueText(text) {
   const original = String(text || "");
@@ -136,7 +137,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "handoff-delivered",
   "heartbeat",
 ]);
-const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
+const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "follow-through", "recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
 const CONTENT_DIAGNOSTIC_REASONS = new Set([
   "timer-started", "notice-or-generation-ended", "notice-disappeared", "generation-ended", "monitor-reset",
   "configured-limit", "ten-minute-limit",
@@ -157,6 +158,7 @@ function promptKind(action, prompt) {
   if (action === "sendContinue") {
     if (prompt === WORKFLOW_REVIEW_PROMPT) return "workflow-review";
     if (prompt === HOUSEKEEPING_PROMPT) return "housekeeping";
+    if (prompt === FOLLOW_THROUGH_PROMPT) return "follow-through";
     return isShortContinuePrompt(prompt) ? "short-continue" : "custom-continue";
   }
   if (action === "sendHandoff") return "handoff";
@@ -192,6 +194,7 @@ function recordDiagnostic(event, details = {}) {
       ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
       "unreadable-check-in",
+      "review-reply-unconfirmed",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
       "model-preference", "conversation-changed", "composer-changed",
@@ -203,7 +206,14 @@ function recordDiagnostic(event, details = {}) {
   for (const [key, values] of Object.entries(enumFields)) {
     if (typeof details[key] === "string" && values.has(details[key])) entry[key] = details[key];
   }
-  if (Number.isInteger(details.tabId)) entry.tabId = details.tabId;
+  if (Number.isInteger(details.tabId)) {
+    entry.tabId = details.tabId;
+    const stage = states.get(details.tabId)?.cycleStage;
+    if (stage && (event === "action-requested" || event === "action-result" || event === "heartbeat")) {
+      entry.cycleStep = stage.step;
+      entry.cycleTotal = stage.total;
+    }
+  }
   if (typeof details.success === "boolean") entry.success = details.success;
   if (Number.isFinite(details.elapsedMs)) entry.elapsedMs = Math.max(0, details.elapsedMs);
   if (Number.isFinite(details.workedSeconds)) entry.workedSeconds = Math.max(0, Math.round(details.workedSeconds));
@@ -292,6 +302,15 @@ async function initialize() {
       state.terminalReviewKind = "blocked";
     }
     delete state.blockedReviewAttempted;
+    const followUps = followUpPrompts(controlsForTab(id));
+    if (state.cycleStage?.total < followUps.length + 1 && state.lastCustomContinue) {
+      const { label, step } = state.cycleStage;
+      const migratedStep = label === "Housekeeping" && followUps.includes(HOUSEKEEPING_PROMPT)
+        ? followUps.indexOf(HOUSEKEEPING_PROMPT) + 2 : step;
+      const completed = migratedStep - 1 - Number(Boolean(state.pendingNormalContinue && step > 1));
+      state.genericContinuesRemaining = followUps.length - completed;
+      state.cycleStage = { ...state.cycleStage, step: migratedStep, total: followUps.length + 1 };
+    }
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -525,8 +544,8 @@ function controlsForTab(tabId) {
 
 function followUpPrompts({ reviewWorkflow, housekeeping }) {
   const prompts = [GENERIC_CONTINUE_PROMPT];
-  if (reviewWorkflow) prompts.push(WORKFLOW_REVIEW_PROMPT);
-  if (housekeeping) prompts.push(HOUSEKEEPING_PROMPT);
+  if (reviewWorkflow) prompts.push(WORKFLOW_REVIEW_PROMPT, FOLLOW_THROUGH_PROMPT);
+  if (housekeeping) prompts.push(HOUSEKEEPING_PROMPT, FOLLOW_THROUGH_PROMPT);
   if (prompts.length === 1) prompts.push(GENERIC_CONTINUE_PROMPT);
   return prompts;
 }
@@ -534,8 +553,17 @@ function followUpPrompts({ reviewWorkflow, housekeeping }) {
 function cycleStage(step, followUps, prompt) {
   const label = step === 1 ? "Custom"
     : prompt === WORKFLOW_REVIEW_PROMPT ? "Improve workflow"
+    : prompt === FOLLOW_THROUGH_PROMPT ? "Follow-through"
     : prompt === HOUSEKEEPING_PROMPT ? "Housekeeping" : "Continue";
   return { step, total: followUps.length + 1, label };
+}
+
+function continueRepairFollowUps(state) {
+  if (!state?.lastCustomContinue || state.pendingNormalContinue
+      || (state.cycleStage && state.cycleStage.label !== "Continue")) return null;
+  const followUps = followUpPrompts(controlsForTab(state.tabId));
+  return followUps[1] !== GENERIC_CONTINUE_PROMPT && state.genericContinuesRemaining < followUps.length - 1
+    ? followUps : null;
 }
 
 function requestContinue(state, prompt, source = "automatic") {
@@ -563,6 +591,7 @@ function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kin
   state.terminalReviewAttempted = true;
   state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
   state.terminalReviewPrompt = prompt;
+  state.terminalReviewIdleSince = null;
   state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = "";
   state.nextActionSource = source;
@@ -1169,6 +1198,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const controls = controlsForTab(tabId);
       sendResponse({ target: targetMatches(tabId), paused: Boolean(state?.paused),
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
+        checkContinueStage: Boolean(continueRepairFollowUps(state)),
+        waitingForTerminalReview: state?.phase === "waiting-for-terminal-review",
         thinkingMinutes: settings.thinkingMinutes,
         enforceModelPreferences: controls.enforceModelPreferences !== false,
         preferredModel: controls.preferredModel, preferredReasoning: controls.preferredReasoning,
@@ -1445,8 +1476,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       );
     }
 
+    // A cycle saved under an older configuration can count a second plain
+    // Continue as step 3. In a cycle with one plain Continue, it is step 2.
+    const repairFollowUps = isShortContinuePrompt(message.latestUserText) && continueRepairFollowUps(state);
+    if (repairFollowUps) {
+      state.genericContinuesRemaining = repairFollowUps.length - 1;
+      state.cycleStage = cycleStage(2, repairFollowUps, GENERIC_CONTINUE_PROMPT);
+      await persistRuntime();
+    }
+
     if (message.isGenerating) {
       let changed = false;
+      if (state.terminalReviewIdleSince) {
+        state.terminalReviewIdleSince = null;
+        changed = true;
+      }
       if (!state.activeStartedAt) {
         state.activeStartedAt = Date.now();
         changed = true;
@@ -1605,6 +1649,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           message.latestUserText,
           state.terminalReviewPrompt || terminalReviewPromptFor(state.terminalReviewKind),
         ))) {
+      if (!state.terminalReviewIdleSince) {
+        state.terminalReviewIdleSince = Date.now();
+        await persistRuntime();
+      } else if (Date.now() - state.terminalReviewIdleSince >= 30000) {
+        state.paused = true;
+        state.phase = "paused";
+        state.resumeContinuePending = true;
+        state.issue = "Could not confirm the stop recheck reply. Check ChatGPT before resuming.";
+        await recordDiagnostic("pause-changed", { tabId, phase: state.phase, reason: "review-reply-unconfirmed" });
+        await persistRuntime();
+      }
       sendResponse({});
       return;
     }

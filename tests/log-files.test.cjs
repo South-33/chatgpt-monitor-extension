@@ -106,5 +106,11 @@ vm.runInNewContext(`${source}; this.logs = AgentMonitorLogFiles;`, context);
   assert.equal(pending.size, 0);
   assert.deepEqual(files.get("agent-monitor-2026-10-01.jsonl").trim().split("\n").map(JSON.parse).map(e => e.event),
     ["reconnected", "disk-failed", "disk-recovered"]);
+  for (const tabId of [41, 42]) {
+    await context.logs.append({ time: "2026-10-01T01:00:03Z", event: "heartbeat", tabId });
+  }
+  for (const tabId of [41, 42]) {
+    assert.equal(JSON.parse(files.get(`agent-monitor-2026-10-01-tab-${tabId}.jsonl`)).tabId, tabId);
+  }
   console.log("log_files_ok");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

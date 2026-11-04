@@ -33,7 +33,7 @@ const PHASE_LABELS = {
   "sending-handoff": "Requesting handoff",
   "waiting-for-handoff": "Waiting for handoff",
   "sending-terminal-review": "Rechecking stop result",
-  "waiting-for-terminal-review": "Waiting for stop recheck",
+  "waiting-for-terminal-review": "Checking stop reply",
   "opening-new-chat": "Opening fresh chat",
   "threshold-waiting": "Handoff due",
 };
@@ -156,7 +156,7 @@ function renderStatus(result) {
   let detail = "";
   if (result.lookupFailed) { label = "Unavailable"; detail = "Reload the extension"; }
   else if (!monitoring) detail = result.currentTabSupported ? "" : "Open a ChatGPT tab";
-  else if (paused) label = "Paused";
+  else if (paused) { label = "Paused"; detail = result.issue || ""; }
   else if (value === "finished") label = "Finished";
   else if (value === "blocked") { label = "Blocked"; detail = "Waiting for you"; }
   else if (result.issue) { label = "Attention"; detail = result.issue; }
@@ -182,6 +182,7 @@ function renderStatus(result) {
       || ["sending-handoff", "waiting-for-handoff", "opening-new-chat"].includes(result.phase)));
   if (result.logFileError) logFolderStatus.textContent = result.logFileError;
   else logFolderStatus.textContent = logFolderName ? `Logs: ${logFolderName}` : "Logs: no folder";
+  logFolderStatus.title = monitoring ? `Log files for this tab end in -tab-${activeTab.id}.jsonl` : "Automatic diagnostic logs";
   chooseLogFolderButton.hidden = false;
 }
 

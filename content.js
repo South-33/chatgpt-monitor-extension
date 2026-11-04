@@ -1683,7 +1683,8 @@ async function scan() {
 
     // Let completed/blocked replies reach the background and pause the task
     // before reconciling model choices. Active generation is never interrupted.
-    if (!generating && !terminalMarker(latestResponseText) && !await ensureModelPreferences(tabRole)) return;
+    if (!generating && !tabRole.waitingForTerminalReview
+        && !terminalMarker(latestResponseText) && !await ensureModelPreferences(tabRole)) return;
 
     // DOM reads and model-menu waits can span a navigation. A completed reply
     // from the old chat must never become an action in the new conversation.
@@ -1699,7 +1700,7 @@ async function scan() {
       recoveryKey,
       latestResponseText,
       latestResponseIsSubstantive,
-      latestUserText: generating ? "" : latestUserText(),
+      latestUserText: !generating || tabRole.checkContinueStage ? latestUserText() : "",
       composerEmpty: generating ? false : !composerText(findComposer()),
       terminalStatus: terminalMarker(latestResponseText),
       consecutiveBlockedResponses: generating ? 0 : consecutiveBlockedResponses(),
