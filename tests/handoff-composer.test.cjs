@@ -89,12 +89,19 @@ async function deliveryScenario() {
   let pluginSelected = false;
   let delivered = false;
   const prompt = 'Relay the captured handoff into this fresh chat.';
+  const composer = {};
   const context = {
     location: { href: 'https://chatgpt.com/' },
     lastPromptFailureReason: 'unknown',
     hasBlockingUi: () => false,
     sameConversation: () => true,
     isConversationPage: () => false,
+    isGenerating: () => false,
+    findComposer: () => composer,
+    modelPickerTrigger: () => ({}),
+    visible: () => true,
+    waitFor: async predicate => predicate() || predicate(),
+    ensureModelPreferences: async () => { events.push('model'); return true; },
     latestUserMatchesPrompt: () => false,
     pluginSelected: () => pluginSelected,
     selectConfiguredPlugin: async () => { events.push('plugin'); pluginSelected = true; return true; },
@@ -111,7 +118,7 @@ async function deliveryScenario() {
     },
   };
   vm.runInNewContext(deliverySource, context);
-  await context.deliverPendingHandoff();
+  await context.deliverPendingHandoff({ preferredReasoning: 'high' });
   return { events, delivered, reason: context.lastPromptFailureReason };
 }
 
@@ -140,7 +147,7 @@ async function deliveryScenario() {
   assert.equal(missingPlugin.context.lastPromptFailureReason, 'plugin-selection-lost');
 
   const fresh = await deliveryScenario();
-  assert.deepEqual(fresh.events, ['plugin', 'send:true', 'delivered']);
+  assert.deepEqual(fresh.events, ['model', 'plugin', 'send:true', 'delivered']);
   assert.equal(fresh.delivered, true);
 
   const modelFailure = await scenario('', true, { modelOk: false });

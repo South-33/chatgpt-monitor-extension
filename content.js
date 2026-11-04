@@ -1184,18 +1184,20 @@ function selectedModel(menu, name) {
 }
 
 function selectedReasoning(trigger, menu) {
-  const explicit = trigger.getAttribute('data-selected-reasoning-effort');
-  if (explicit) return explicit.toLowerCase();
   const slider = pickerItems(menu, '[role="slider"], input[type="range"], [data-reasoning-slider]').at(-1);
   const effortText = slider?.getAttribute('aria-valuetext') || '';
   const fromSlider = (effortText.match(/\b(instant|medium|high)\b/i) || [])[1];
   if (fromSlider) return fromSlider.toLowerCase();
+  const explicit = trigger?.getAttribute('data-selected-reasoning-effort')?.toLowerCase();
+  if (menu && explicit) return explicit;
   const status = pickerItems(menu, '[role="status"]').map(item => item.textContent).join(' ');
   const inMenu = (status.match(/\b(instant|medium|high)\b/i) || [])[1];
   if (inMenu) return inMenu.toLowerCase();
-  // The compact GPT-6 control shows the effort but not the selected model.
-  const compact = normalizedControlText(trigger.innerText || trigger.textContent || '');
-  return /^(?:instant|medium|high)$/i.test(compact) ? compact.toLowerCase() : '';
+  const compact = normalizedControlText(trigger?.innerText || trigger?.textContent || '');
+  // The closed picker can show "Medium" or a badge such as "5.6 High".
+  const badge = compact.match(/\b(instant|medium|high)$/i);
+  if (badge) return badge[1].toLowerCase();
+  return explicit || '';
 }
 
 async function ensureModelPreferences(preferences, force = false) {
@@ -1209,6 +1211,7 @@ async function ensureModelPreferences(preferences, force = false) {
   const model = preferences.preferredModel || '';
   const reasoning = preferences.preferredReasoning || '';
   if (!model && !reasoning) return true;
+  const expectedUrl = location.href;
   const trigger = modelPickerTrigger();
   const signature = trigger ? `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` : '';
   const key = `${location.href}|${model}|${reasoning}`;
@@ -1220,7 +1223,7 @@ async function ensureModelPreferences(preferences, force = false) {
   // can appear while a menu is opening; none should be interrupted by this flow.
   const canAct = async () => {
     const current = await sendRuntime({ type: 'isTargetTab' });
-    return !stopped && current?.target && !current.paused && current.enforceModelPreferences !== false
+    return !stopped && sameConversation(expectedUrl) && current?.target && !current.paused && current.enforceModelPreferences !== false
       && !isGenerating() && !hasBlockingUi()
       && (current.preferredModel || '') === model && (current.preferredReasoning || '') === reasoning;
   };
@@ -1306,11 +1309,24 @@ async function ensureModelPreferences(preferences, force = false) {
       menu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
       if (!await waitFor(() => !controlMenuOpen(trigger), 1000)) success = false;
     }
+    if (success && reasoning) {
+      reason = 'reasoning-unavailable';
+      let matched = false;
+      success = await waitFor(() => {
+        const ready = modelPickerTrigger() === trigger && !controlMenuOpen(trigger)
+          && selectedReasoning(trigger, null) === reasoning;
+        const stable = matched && ready;
+        matched = ready;
+        return stable;
+      }, 1500) && await canAct()
+        && modelPickerTrigger() === trigger && selectedReasoning(trigger, null) === reasoning;
+    }
     if (success) {
       verifiedModelSelection = { trigger, key, signature: `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` };
       modelPreferenceFailure = '';
       modelPreferenceRetryAt = 0;
-      await sendRuntime({ type: 'modelPreferenceResult', ok: true, changed });
+      void sendRuntime({ type: 'modelPreferenceResult', ok: true, changed, verifiedForSend: force,
+        model, reasoning });
     } else if (await canAct()) {
       modelPreferenceRetryAt = Date.now() + 30000;
       const repeated = modelPreferenceFailure === key;
@@ -1512,7 +1528,7 @@ async function handleAction(result) {
   }
 }
 
-async function deliverPendingHandoff() {
+async function deliverPendingHandoff(preferences) {
   if (hasBlockingUi()) return;
   const expectedUrl = location.href;
   const result = await sendRuntime({ type: "getPendingHandoff" });
@@ -1526,10 +1542,27 @@ async function deliverPendingHandoff() {
     }
     return;
   }
-  if (!pluginSelected() && !await selectConfiguredPlugin()) {
-    await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
-      reason: 'plugin-selection-lost', url: location.href });
-    return;
+  if (!pluginSelected()) {
+    const needsPicker = preferences.enforceModelPreferences !== false
+      && (preferences.preferredModel || preferences.preferredReasoning);
+    let previousComposer = null;
+    const ready = await waitFor(() => {
+      const composer = findComposer();
+      const stable = composer === previousComposer;
+      previousComposer = composer;
+      return sameConversation(expectedUrl) && visible(composer) && stable
+        && (!needsPicker || modelPickerTrigger()) && !isGenerating() && !hasBlockingUi();
+    }, 10000);
+    if (!sameConversation(expectedUrl)) return;
+    let reason;
+    if (!ready) reason = 'composer-unavailable';
+    else if (!await ensureModelPreferences(preferences)) reason = 'model-preference';
+    else if (sameConversation(expectedUrl) && !await selectConfiguredPlugin()) reason = 'plugin-selection-lost';
+    if (reason) {
+      await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
+        reason, url: expectedUrl });
+      return;
+    }
   }
   if (!sameConversation(expectedUrl)) return;
 
@@ -1606,7 +1639,7 @@ async function scan() {
     if (!isConversationPage() || tabRole.pendingDelivery) {
       resetExtendedThinking("monitor-reset");
       if (isGenerating()) return;
-      await deliverPendingHandoff();
+      await deliverPendingHandoff(tabRole);
       return;
     }
 

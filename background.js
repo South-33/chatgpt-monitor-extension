@@ -123,7 +123,7 @@ const manualSwapsInFlight = new Set();
 const MAX_DIAGNOSTIC_EVENTS = 500;
 const DIAGNOSTIC_EVENTS = new Set([
   "approval_detected", "approval_resolved", "approval_pending",
-  "model-selection-changed", "model-selection-failed",
+  "model-selection-changed", "model-selection-failed", "model-selection-verified",
   "monitoring-changed",
   "pause-changed",
   "watchdog-detected",
@@ -223,6 +223,11 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isFinite(details.elapsedMs)) entry.elapsedMs = Math.max(0, details.elapsedMs);
   if (Number.isFinite(details.workedSeconds)) entry.workedSeconds = Math.max(0, Math.round(details.workedSeconds));
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
+  if (event === "model-selection-changed" || event === "model-selection-verified") {
+    if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details.model)) entry.model = details.model;
+    if (["instant", "medium", "high"].includes(details.reasoning)) entry.reasoning = details.reasoning;
+    if (typeof details.changed === "boolean") entry.changed = details.changed;
+  }
 
   diagnosticWrites = diagnosticWrites.then(async () => {
     const { diagnostics } = await chrome.storage.local.get("diagnostics");
@@ -1175,7 +1180,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.ok) {
           if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
           state.modelPreferenceIssue = "";
-          if (message.changed) await recordDiagnostic("model-selection-changed", { tabId, success: true });
+          if (message.verifiedForSend || message.changed) {
+            await recordDiagnostic(message.verifiedForSend ? "model-selection-verified" : "model-selection-changed", {
+              tabId, success: true, model: message.model, reasoning: message.reasoning, changed: message.changed,
+            });
+          }
         } else if (issues[message.reason]) {
           state.modelPreferenceIssue = issues[message.reason];
           state.issue = state.modelPreferenceIssue;

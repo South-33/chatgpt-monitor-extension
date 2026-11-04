@@ -60,6 +60,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   menu.dispatchEvent = event => { if (event.key === 'Escape') open = false; };
   const ctx = {
     location: { href: 'https://chatgpt.com/c/task' },
+    sameConversation: url => url === ctx.location.href,
     document: {
       getElementById: id => id === 'menu' && open ? menu : null,
       querySelectorAll: selector => selector === 'button' ? [trigger] : open ? [menu] : [],
@@ -152,6 +153,16 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(switchToGpt6.selection().effort, 'medium');
   assert.equal(switchToGpt6.trigger.innerText, 'Medium',
     'collapsed GPT-6 control displays only the new effort level');
+
+  const resetOnClose = fixture(0, false, 'GPT-5.6 Sol');
+  const close = resetOnClose.menu.dispatchEvent;
+  resetOnClose.menu.dispatchEvent = event => {
+    close(event);
+    resetOnClose.trigger.innerText = 'Thinking effort5.6 Medium';
+  };
+  assert.equal(await resetOnClose.ctx.ensureModelPreferences(resetOnClose.preferences, true), false,
+    'do not authorize a send if reasoning reverts after closing the picker');
+  assert.equal(resetOnClose.reports.at(-1).reason, 'reasoning-unavailable');
 
   const disabled = fixture();
   disabled.preferences.enforceModelPreferences = false;
