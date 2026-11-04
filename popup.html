@@ -46,6 +46,7 @@
       .model-toggle input { margin: 0; width: 15px; height: 15px; accent-color: var(--accent); }
       .workflow-toggle { display: flex; align-items: center; gap: 6px; width: fit-content; margin-top: 6px; cursor: pointer; }
       .workflow-toggle input { margin: 0; accent-color: var(--accent); }
+      .cycle-options { display: flex; gap: 16px; }
       .field { display: grid; gap: 2px; min-width: 0; color: var(--muted); font-size: 11px; }
       .field :is(input, select) { width: 100%; min-width: 0; height: 30px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface); font-size: 13px; }
       .field :disabled { opacity: .55; }
@@ -81,9 +82,10 @@
         <label class="field" for="threshold">Handoff (min)<input id="threshold" type="number" min="1" max="720" disabled /></label>
         <label class="field" for="pluginName">Plugin <input id="pluginName" type="text" placeholder="DevSpace" spellcheck="false" disabled /></label>
       </div>
-      <label class="workflow-toggle" title="Cycle through your prompt, Continue, workflow review, and Continue with housekeeping">
-        <input id="reviewWorkflow" type="checkbox" disabled /> Review workflow
-      </label>
+      <div class="cycle-options">
+        <label class="workflow-toggle"><input id="reviewWorkflow" type="checkbox" disabled /> Review workflow</label>
+        <label class="workflow-toggle"><input id="housekeeping" type="checkbox" disabled /> Housekeeping</label>
+      </div>
     </section>
 
     <div id="notice" role="status"></div>

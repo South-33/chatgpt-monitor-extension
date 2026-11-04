@@ -34,7 +34,10 @@ function worker() {
     type: 'saveContinuePreset', tabId, index: tabId - 1, text: `Work on task ${tabId} only.`,
   })));
   for (const tabId of [1, 2, 3, 4]) {
-    if (tabId === 4) await harness.send({ type: 'saveSettings', settings: { reviewWorkflow: true } });
+    if (tabId === 4) await harness.send({ type: 'saveSettings', tabId, settings: {
+      reviewWorkflow: true, housekeeping: true, preferredModel: 'GPT-6', preferredReasoning: 'medium',
+      enforceModelPreferences: false,
+    } });
     const settings = (await harness.send({ type: 'getSettings', tabId })).settings;
     assert.equal(settings.continuePresetIndex, tabId - 1);
     assert.equal(settings.continuePrompt, `Work on task ${tabId} only.`);
@@ -59,6 +62,14 @@ function worker() {
     'monitoring selected tabs must not enroll other open tabs');
   const reviewUrl = 'https://chatgpt.com/c/4';
   const reviewSender = { tab: { id: 4, url: reviewUrl } };
+  const ownership = await harness.send({ type: 'isTargetTab' }, reviewSender);
+  assert.equal(ownership.preferredModel, 'GPT-6');
+  assert.equal(ownership.preferredReasoning, 'medium');
+  assert.equal(ownership.enforceModelPreferences, false);
+  const other = (await harness.send({ type: 'getSettings', tabId: 2 })).settings;
+  assert.equal(other.reviewWorkflow, false);
+  assert.equal(other.housekeeping, false);
+  assert.equal(other.preferredModel, 'GPT-5.6 Sol');
   for (const [step, expected] of [
     ['continue', /^Automated message: Continue$/],
     ['review', /Step back from the recent work/],
@@ -72,7 +83,6 @@ function worker() {
     assert.match(action.prompt, expected);
     await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
   }
-  await harness.send({ type: 'saveSettings', settings: { reviewWorkflow: false } });
   // Only successful deliveries count, with independent cycles for each thread.
   const cycleUrl = 'https://chatgpt.com/c/2';
   const cycleSender = { tab: { id: 2, url: cycleUrl } };

@@ -16,6 +16,7 @@ const preferredModel = document.querySelector("#preferredModel");
 const preferredReasoning = document.querySelector("#preferredReasoning");
 const enforceModelPreferences = document.querySelector("#enforceModelPreferences");
 const reviewWorkflow = document.querySelector("#reviewWorkflow");
+const housekeeping = document.querySelector("#housekeeping");
 const pluginName = document.querySelector("#pluginName");
 let pendingControlWrites = 0;
 let controlSaveQueue = Promise.resolve();
@@ -65,10 +66,12 @@ function syncSavedSettings(settings) {
   savedSettings = settings;
   if (!settingsLoaded) return;
   if (!pendingControlWrites) {
-    if (document.activeElement !== preferredModel) preferredModel.value = settings.preferredModel || "";
-    preferredReasoning.value = settings.preferredReasoning || "";
-    enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
-    reviewWorkflow.checked = settings.reviewWorkflow === true;
+    const controls = settings.tabControls?.[promptTabId] || settings;
+    if (document.activeElement !== preferredModel) preferredModel.value = controls.preferredModel || "";
+    preferredReasoning.value = controls.preferredReasoning || "";
+    enforceModelPreferences.checked = controls.enforceModelPreferences !== false;
+    reviewWorkflow.checked = controls.reviewWorkflow === true;
+    housekeeping.checked = controls.housekeeping === true;
     updateModelControls();
   }
   const profile = settings.tabContinuePresets?.[promptTabId];
@@ -305,6 +308,8 @@ async function loadSettings() {
     enforceModelPreferences.disabled = false;
     reviewWorkflow.checked = settings.reviewWorkflow === true;
     reviewWorkflow.disabled = false;
+    housekeeping.checked = settings.housekeeping === true;
+    housekeeping.disabled = false;
     presets = settings.continuePresets;
     activePreset = settings.continuePresetIndex;
     continuePrompt.value = presets[activePreset];
@@ -389,7 +394,7 @@ async function saveControlSettings(settings = {
 }) {
   pendingControlWrites++;
   controlSaveQueue = controlSaveQueue.catch(() => {}).then(async () => {
-    await chrome.runtime.sendMessage({ type: "saveSettings", settings });
+    await chrome.runtime.sendMessage({ type: "saveSettings", tabId: promptTabId, settings });
   }).catch(() => showNotice("Could not save settings.", true)).finally(() => {
     pendingControlWrites--;
     if (savedSettings) syncSavedSettings(savedSettings);
@@ -403,6 +408,7 @@ enforceModelPreferences.addEventListener("change", () => {
   void saveControlSettings();
 });
 reviewWorkflow.addEventListener("change", () => void saveControlSettings({ reviewWorkflow: reviewWorkflow.checked }));
+housekeeping.addEventListener("change", () => void saveControlSettings({ housekeeping: housekeeping.checked }));
 chooseLogFolderButton.addEventListener("click", async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL("logs.html") });
 });

@@ -14,6 +14,7 @@ function popup(tabId, index) {
     preferredReasoning: { value: '', disabled: false },
     enforceModelPreferences: { checked: true },
     reviewWorkflow: { checked: false },
+    housekeeping: { checked: false },
     updateModelControls() {
       sandbox.preferredModel.disabled = !sandbox.enforceModelPreferences.checked;
       sandbox.preferredReasoning.disabled = !sandbox.enforceModelPreferences.checked;

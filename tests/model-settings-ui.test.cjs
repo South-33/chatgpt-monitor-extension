@@ -16,6 +16,7 @@ assert.match(html, /<option value="GPT-5\.6 Sol">GPT-5\.6 Sol<\/option>/);
   const sent = [];
   const ctx = {
     settingsLoaded: true,
+    promptTabId: 42,
     pendingControlWrites: 0, controlSaveQueue: Promise.resolve(), savedSettings: null,
     preferredModel: { value: 'GPT-6', disabled: false },
     preferredReasoning: { value: 'high', disabled: false },
@@ -32,6 +33,7 @@ assert.match(html, /<option value="GPT-5\.6 Sol">GPT-5\.6 Sol<\/option>/);
   assert.equal(ctx.preferredModel.disabled, true);
   assert.equal(ctx.preferredReasoning.disabled, true);
   await ctx.saveControlSettings();
+  assert.equal(sent[0].tabId, 42);
   assert.equal(sent[0].settings.enforceModelPreferences, false);
   assert.equal(sent[0].settings.preferredModel, 'GPT-6',
     'turning automation off retains the preferred model');

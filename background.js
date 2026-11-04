@@ -5,6 +5,7 @@ const DEFAULT_SETTINGS = {
   preferredReasoning: "high",
   enforceModelPreferences: true,
   reviewWorkflow: false,
+  housekeeping: false,
   enabled: false,
   targetTabIds: [],
   thresholdMinutes: 130,
@@ -17,6 +18,7 @@ const DEFAULT_SETTINGS = {
   continuePresetIndex: 0,
   continuePresets: null,
   tabContinuePresets: {},
+  tabControls: {},
 
 };
 
@@ -517,14 +519,19 @@ function continuePromptForTab(tabId) {
   return profile.presets[profile.index];
 }
 
+function controlsForTab(tabId) {
+  return settings.tabControls?.[tabId] || settings;
+}
+
 function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
+    const { reviewWorkflow, housekeeping } = controlsForTab(state.tabId);
     const custom = customContinueText(continuePromptForTab(state.tabId));
     const useCustom = custom !== state.lastCustomContinue || !(state.genericContinuesRemaining > 0);
     state.pendingNormalContinue = { custom, useCustom };
     if (useCustom) prompt = continuationPrompt(custom);
-    else if (settings.reviewWorkflow && state.genericContinuesRemaining === 2) prompt = WORKFLOW_REVIEW_PROMPT;
-    else if (settings.reviewWorkflow && state.genericContinuesRemaining === 1) prompt = HOUSEKEEPING_PROMPT;
+    else if (reviewWorkflow && state.genericContinuesRemaining === (housekeeping ? 2 : 1)) prompt = WORKFLOW_REVIEW_PROMPT;
+    else if (housekeeping && state.genericContinuesRemaining === 1) prompt = HOUSEKEEPING_PROMPT;
     else prompt = GENERIC_CONTINUE_PROMPT;
   }
   state.nextActionSource = source;
@@ -568,11 +575,13 @@ function handoffInProgress(state) {
 function markTransientActionAccepted(state) {
   if (state.phase === "sending-continue" && state.pendingNormalContinue) {
     const { custom, useCustom } = state.pendingNormalContinue;
+    const { reviewWorkflow, housekeeping } = controlsForTab(state.tabId);
+    const followUps = reviewWorkflow && housekeeping ? 3 : 2;
     if (useCustom) {
       state.lastCustomContinue = custom;
-      state.genericContinuesRemaining = settings.reviewWorkflow ? 3 : 2;
+      state.genericContinuesRemaining = followUps;
     } else {
-      const remaining = settings.reviewWorkflow ? state.genericContinuesRemaining : Math.min(2, state.genericContinuesRemaining);
+      const remaining = Math.min(followUps, state.genericContinuesRemaining);
       state.genericContinuesRemaining = Math.max(0, remaining - 1);
     }
     state.pendingNormalContinue = null;
@@ -695,7 +704,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "getSettings") {
       const profile = continueProfile(message.tabId);
-      sendResponse({ settings: { ...settings, continuePresets: profile.presets,
+      sendResponse({ settings: { ...settings, ...settings.tabControls?.[message.tabId], continuePresets: profile.presets,
         continuePresetIndex: profile.index, continuePrompt: profile.presets[profile.index] } });
       return;
     }
@@ -715,28 +724,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "saveSettings") {
-      const previousModel = settings.preferredModel;
-      const previousReasoning = settings.preferredReasoning;
-      const previousEnforcement = settings.enforceModelPreferences;
+      const tabId = message.tabId;
+      if (tabId !== undefined && !Number.isInteger(tabId)) {
+        sendResponse({ ok: false });
+        return;
+      }
+      const previous = controlsForTab(tabId);
+      const controls = {
+        reviewWorkflow: typeof message.settings?.reviewWorkflow === "boolean"
+          ? message.settings.reviewWorkflow : previous.reviewWorkflow,
+        housekeeping: typeof message.settings?.housekeeping === "boolean"
+          ? message.settings.housekeeping : previous.housekeeping,
+        enforceModelPreferences: typeof message.settings?.enforceModelPreferences === "boolean"
+          ? message.settings.enforceModelPreferences : previous.enforceModelPreferences,
+        preferredModel: typeof message.settings?.preferredModel === "string"
+          ? message.settings.preferredModel.trim().slice(0, 80) : previous.preferredModel,
+        preferredReasoning: ["", "instant", "medium", "high"].includes(message.settings?.preferredReasoning)
+          ? message.settings.preferredReasoning : previous.preferredReasoning,
+      };
       settings = {
         ...settings,
-        reviewWorkflow: typeof message.settings?.reviewWorkflow === "boolean"
-          ? message.settings.reviewWorkflow : settings.reviewWorkflow,
-        enforceModelPreferences: typeof message.settings?.enforceModelPreferences === "boolean"
-          ? message.settings.enforceModelPreferences : settings.enforceModelPreferences,
-        preferredModel: typeof message.settings?.preferredModel === "string"
-          ? message.settings.preferredModel.trim().slice(0, 80) : settings.preferredModel,
-        preferredReasoning: ["", "instant", "medium", "high"].includes(message.settings?.preferredReasoning)
-          ? message.settings.preferredReasoning : settings.preferredReasoning,
+        ...(tabId === undefined ? controls : {}),
         thresholdMinutes: Math.min(720, Math.max(1, Number(message.settings?.thresholdMinutes) || settings.thresholdMinutes || 130)),
         thinkingMinutes: Math.min(60, Math.max(1, Number(message.settings?.thinkingMinutes) || settings.thinkingMinutes || 10)),
         pluginName: typeof message.settings?.pluginName === "string"
           ? (message.settings.pluginName.trim().slice(0, 80) || DEFAULT_SETTINGS.pluginName)
           : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
-      if (previousModel !== settings.preferredModel || previousReasoning !== settings.preferredReasoning
-          || previousEnforcement !== settings.enforceModelPreferences) {
+      if (tabId !== undefined) settings.tabControls[tabId] = controls;
+      if (previous.preferredModel !== controls.preferredModel || previous.preferredReasoning !== controls.preferredReasoning
+          || previous.enforceModelPreferences !== controls.enforceModelPreferences) {
         for (const state of states.values()) {
+          if (tabId !== undefined && state.tabId !== tabId) continue;
           if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
           state.modelPreferenceIssue = "";
         }
@@ -1115,11 +1134,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
       const state = target ? states.get(tabId) : null;
+      const controls = controlsForTab(tabId);
       sendResponse({ target: targetMatches(tabId), paused: Boolean(state?.paused),
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
         thinkingMinutes: settings.thinkingMinutes,
-        enforceModelPreferences: settings.enforceModelPreferences !== false,
-        preferredModel: settings.preferredModel, preferredReasoning: settings.preferredReasoning,
+        enforceModelPreferences: controls.enforceModelPreferences !== false,
+        preferredModel: controls.preferredModel, preferredReasoning: controls.preferredReasoning,
         pluginName: settings.pluginName || DEFAULT_SETTINGS.pluginName });
       return;
     }
@@ -1683,6 +1703,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   lastRecoveryAttemptAt.delete(tabId);
   pendingHandoffs.delete(tabId);
   delete settings.tabContinuePresets?.[tabId];
+  delete settings.tabControls?.[tabId];
   if (settings.targetTabIds.includes(tabId)) {
     settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
     settings.enabled = settings.targetTabIds.length > 0;
