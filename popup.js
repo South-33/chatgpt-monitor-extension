@@ -176,7 +176,7 @@ function renderStatus(result) {
   statusDetail.textContent = detail;
   statusDetail.hidden = !detail;
   statusDetail.className = `status-detail${result.issue || result.lookupFailed ? " error" : ""}`;
-  retryButton.className = `retry-button${result.issue && monitoring ? " visible" : ""}`;
+  retryButton.className = `retry-button${result.issue && monitoring && !paused ? " visible" : ""}`;
   monitorButton.textContent = monitoring ? "Stop" : "Monitor this tab";
   monitorButton.className = `monitor-button${monitoring ? " stop" : ""}`;
   monitorButton.disabled = !activeTab?.url || (!monitoring && !result.currentTabSupported);

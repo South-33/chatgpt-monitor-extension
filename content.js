@@ -720,10 +720,12 @@ function latestUserText() {
   const candidates = modern.length
     ? modern
     : [...document.querySelectorAll('[data-message-author-role="user"]')];
-  const node = candidates.at(-1);
-  if (node) return normalizedText(node.innerText || node.textContent || "");
-  const bubble = [...document.querySelectorAll('[data-turn-key] [data-user-message-bubble="true"]')].at(-1);
-  return normalizedText(bubble?.innerText || bubble?.textContent || "");
+  const node = candidates.at(-1)
+    || [...document.querySelectorAll('[data-turn-key] [data-user-message-bubble="true"]')].at(-1);
+  // The collapsed bubble includes an ellipsis and a Show more button beside
+  // the full message body. Match the body without the display controls.
+  const body = node?.querySelector(".whitespace-pre-wrap");
+  return normalizedText(body?.textContent || node?.innerText || node?.textContent || "");
 }
 
 function streamRecoveryFailure() {

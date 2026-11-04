@@ -195,6 +195,8 @@ function recordDiagnostic(event, details = {}) {
       "waiting-for-handoff", "opening-new-chat", "threshold-waiting", "finished",
     ]),
     promptMode: DIAGNOSTIC_PROMPT_MODES,
+    reviewCheck: new Set(["no-new-response", "user-message-missing", "prompt-mismatch", "reply-empty"]),
+    observedTerminal: new Set(["blocked", "finished"]),
     reason: new Set([
       ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
@@ -1674,11 +1676,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     );
     // Only the reply to our reconsideration can resolve the terminal review.
     // A stale assistant turn must not be accepted as the review's answer.
-    if (state.phase === "waiting-for-terminal-review"
-        && (!isNewResponse || !sameSubmittedPrompt(
-          message.latestUserText,
-          state.terminalReviewPrompt || terminalReviewPromptFor(state.terminalReviewKind),
-        ))) {
+    let reviewCheck;
+    if (state.phase === "waiting-for-terminal-review") {
+      if (!isNewResponse) reviewCheck = "no-new-response";
+      else if (!message.latestUserText) reviewCheck = "user-message-missing";
+      else if (!sameSubmittedPrompt(message.latestUserText,
+        state.terminalReviewPrompt || terminalReviewPromptFor(state.terminalReviewKind))) reviewCheck = "prompt-mismatch";
+      else if (!message.latestResponseText) reviewCheck = "reply-empty";
+    }
+    if (reviewCheck) {
       if (!state.terminalReviewIdleSince) {
         state.terminalReviewIdleSince = Date.now();
         await persistRuntime();
@@ -1686,16 +1692,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.paused = true;
         state.phase = "paused";
         state.resumeContinuePending = true;
-        state.issue = "Could not confirm the stop recheck reply. Check ChatGPT before resuming.";
-        await recordDiagnostic("pause-changed", { tabId, phase: state.phase, reason: "review-reply-unconfirmed" });
+        state.issue = "Could not verify the final review reply. Resume if the task should continue.";
+        await recordDiagnostic("pause-changed", {
+          tabId, phase: state.phase, reason: "review-reply-unconfirmed", reviewCheck,
+          observedTerminal: terminalStatus(message.latestResponseText),
+          elapsedMs: Date.now() - state.terminalReviewIdleSince,
+        });
         await persistRuntime();
       }
-      sendResponse({});
-      return;
-    }
-    if (state.phase === "waiting-for-terminal-review" && !message.latestResponseText) {
-      // The review may still be mounting. Do not consume the turn or lose the
-      // review state until a readable answer or a clear recovery error arrives.
       sendResponse({});
       return;
     }

@@ -179,7 +179,11 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   now += 31_000;
   assert.equal((await restarted(unmatched, prematureUrl)).action, undefined);
   assert.equal(local.runtime.states[64].paused, true);
-  assert.match(local.runtime.states[64].issue, /Could not confirm the stop recheck reply/);
+  assert.match(local.runtime.states[64].issue, /Could not verify the final review reply/);
+  const { events: finalEvents } = await restarted({ type: 'getDiagnostics' });
+  const pause = finalEvents.find(entry => entry.reason === 'review-reply-unconfirmed');
+  assert.equal(pause.reviewCheck, 'prompt-mismatch');
+  assert.equal(pause.observedTerminal, 'blocked');
 
   console.log('terminal_review_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

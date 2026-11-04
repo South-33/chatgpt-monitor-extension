@@ -19,4 +19,14 @@ for (const text of ['Everything is still stable. More work remains.', 'All work 
 }
 nodes = [];
 assert.equal(ctx.latestAssistantResponse().text, '', 'a new user-only turn cannot reuse an older answer');
+const review = 'Before accepting TASK_BLOCKED, check the original blocker.';
+const collapsedBubble = {
+  innerText: `${review}\n…\nShow more`,
+  querySelector: selector => selector === '.whitespace-pre-wrap' ? { textContent: review } : null,
+};
+ctx.document.querySelectorAll = selector => selector.includes('data-user-message-bubble') ? [collapsedBubble] : [];
+ctx.normalizedText = value => value.trim();
+const userTextStart = source.indexOf('function latestUserText');
+vm.runInNewContext(source.slice(userTextStart, source.indexOf('\n}', userTextStart) + 2), ctx);
+assert.equal(ctx.latestUserText(), review, 'collapsed user prompts exclude expand controls');
 console.log('response_reading_ok');
