@@ -87,7 +87,7 @@ function continuationPrompt(text) {
 }
 
 const CYCLE_GUIDANCE = new Map([
-  ["improve", "Improve the agent harness where it will most help the remaining work. Use recent delays, errors, or poor evidence to choose what to improve. Try a new tool or replace the workflow if that would help more. Finish once you verify a meaningful gain in speed, reliability, or evidence quality on representative work, or judge that further changes would add little value."],
+  ["improve", "Improve the agent harness where it will most help the remaining work. Find the recurring bottleneck that costs the agent the most time, reliability, or useful evidence. Ask what you would build from scratch with the tools and hardware available. Give a promising unconventional idea a real trial. Build custom tooling, change how you gather or present evidence, or replace the whole workflow if that offers the best result. Test it on representative work and judge the end-to-end gain. Finish when you verify a meaningful improvement or have good reason to expect little payoff from further work."],
   ["housekeeping", `${HOUSEKEEPING_GUIDANCE}\n\n${GIT_GUIDANCE}`],
 ]);
 
