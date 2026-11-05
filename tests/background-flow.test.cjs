@@ -169,7 +169,7 @@ function send(message, sender = {}) {
     isGenerating: false,
     workedSeconds: 0,
     responseKey: "finished-review-response",
-    latestResponseText: "The original goal is still fully verified.\n\nTASK_FINISHED",
+    latestResponseText: "The original goal is still fully verified.\n\nRECONSIDER_FINISHED",
     latestUserText: finishedReview.prompt,
     composerEmpty: true,
   }, continuedTab);
@@ -207,8 +207,7 @@ function send(message, sender = {}) {
   }, blockedTab);
   assert.equal(blockedAction.action, "sendTerminalReview", "the first block triggers exactly one reconsideration");
   assert.match(blockedAction.prompt, /exact blocker/i);
-  assert.match(blockedAction.prompt, /clean and current/i);
-  assert.equal(local.runtime.states[9].terminalReviewAttempted, true);
+  assert.match(blockedAction.prompt, /Reconsider contract/i);
   assert.equal(local.runtime.states[9].paused, false);
   const repeatedBlock = await send({ type: "status", url: blockedTab.tab.url,
     isGenerating: false, responseKey: "blocked-response",
@@ -224,7 +223,7 @@ function send(message, sender = {}) {
   assert.equal(unrelatedOldResponse.action, undefined, "an old response cannot satisfy reconsideration");
   const secondBlock = await send({ type: "status", url: blockedTab.tab.url,
     isGenerating: false, responseKey: "review-blocked-response",
-    latestResponseText: "The missing user approval is still required.\nTASK_BLOCKED",
+    latestResponseText: "The missing user approval is still required.\nRECONSIDER_BLOCKED",
     latestUserText: blockedAction.prompt, composerEmpty: true,
   }, blockedTab);
   assert.equal(secondBlock.action, undefined, "a confirmed second block stops without another prompt");
@@ -352,7 +351,7 @@ function send(message, sender = {}) {
     url: blockedAtThresholdTab.tab.url }, blockedAtThresholdTab);
   const thresholdSecondBlock = await send({ type: "status", url: blockedAtThresholdTab.tab.url,
     isGenerating: false, responseKey: "blocked-at-threshold-review",
-    latestResponseText: "User action is still required.\nTASK_BLOCKED",
+    latestResponseText: "User action is still required.\nRECONSIDER_BLOCKED",
     latestUserText: blockedAtThresholdAction.prompt, composerEmpty: true,
   }, blockedAtThresholdTab);
   assert.equal(thresholdSecondBlock.action, undefined);
@@ -376,7 +375,7 @@ function send(message, sender = {}) {
     url: reloadedBlockedTab.tab.url }, reloadedBlockedTab);
   const reloadedReview = await send({ type: "status", url: reloadedBlockedTab.tab.url,
     isGenerating: false, responseKey: "reloaded-review-response",
-    latestResponseText: "Cannot proceed without the owner's credential.\nTASK_BLOCKED",
+    latestResponseText: "Cannot proceed without the owner's credential.\nRECONSIDER_BLOCKED",
     latestUserText: reloadedBlockedAction.prompt, composerEmpty: true,
   }, reloadedBlockedTab);
   assert.equal(reloadedReview.action, undefined);

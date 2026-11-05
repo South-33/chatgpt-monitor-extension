@@ -32,8 +32,8 @@ const PHASE_LABELS = {
   "waiting-for-response": "Waiting for response",
   "sending-handoff": "Requesting handoff",
   "waiting-for-handoff": "Waiting for handoff",
-  "sending-terminal-review": "Rechecking stop result",
-  "waiting-for-terminal-review": "Checking stop reply",
+  "sending-terminal-review": "Sending Reconsider",
+  "waiting-for-terminal-review": "Reconsidering",
   "opening-new-chat": "Opening fresh chat",
   "threshold-waiting": "Handoff due",
 };
@@ -133,7 +133,7 @@ function showNotice(text, isError = false) {
   clearTimeout(noticeTimer);
   notice.textContent = text;
   notice.style.color = isError ? "var(--red)" : "var(--muted)";
-  noticeTimer = setTimeout(() => { notice.textContent = ""; }, 2500);
+  noticeTimer = setTimeout(() => { notice.textContent = ""; }, isError ? 6000 : 2500);
 }
 
 function renderStatus(result) {
@@ -416,7 +416,7 @@ for (const button of sendNowButtons) {
     sendingCyclePrompt = true;
     renderStatus(currentStatus);
     try {
-      await runAction("sendCyclePrompt", "Could not send prompt.", {
+      await runAction("sendCyclePrompt", "The extension did not confirm the send. Check ChatGPT before retrying.", {
         kind: button.dataset.sendNow, url: activeTab?.url,
       });
     } finally {

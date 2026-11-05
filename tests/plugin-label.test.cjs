@@ -87,7 +87,7 @@ assert.deepEqual(Array.from(sandbox.durations("Worked for 12m 3s")), [723]);
 assert.deepEqual(Array.from(sandbox.durations("Worked for 1h 7m 12s")), [4032]);
 
 const recoveryStart = source.indexOf("function streamRecoveryFailure");
-const recoveryEnd = source.indexOf("function consecutiveBlockedResponses", recoveryStart);
+const recoveryEnd = source.indexOf("function fingerprint", recoveryStart);
 assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, "stream recovery helper not found");
 const failedTurn = {
   hasAttribute(name) { return name === "data-turn-key"; },

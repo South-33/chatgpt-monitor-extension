@@ -10,6 +10,8 @@ function worker() {
   let listener;
   let removed;
   const deliveries = [];
+  const attachments = [];
+  const sendErrors = new Map();
   const chrome = {
     runtime: { onInstalled: event(), onStartup: event(),
       onMessage: { addListener(fn) { listener = fn; } } },
@@ -17,15 +19,25 @@ function worker() {
       async get(key) { return { [key]: structuredClone(local[key]) }; },
       async set(value) { Object.assign(local, structuredClone(value)); },
     }, session: { async get() { return {}; } }, onChanged: event() },
-    scripting: { async executeScript() {} },
+    scripting: { async executeScript({ target }) { attachments.push(target.tabId); } },
     tabs: { async get(id) { return { id, url: `https://chatgpt.com/c/${id}` }; },
-      async sendMessage(id, message) { deliveries.push({ id, ...message }); return { ok: true }; },
+      async sendMessage(id, message, options) {
+        deliveries.push({ id, ...message, options });
+        const error = sendErrors.get(id);
+        if (error) {
+          sendErrors.delete(id);
+          throw new Error(error);
+        }
+        return { ok: true };
+      },
       onRemoved: { addListener(fn) { removed = fn; } } },
     alarms: { create() {}, onAlarm: event() },
   };
   vm.runInNewContext(source, { chrome, console, URL, Date });
   return {
     deliveries,
+    attachments,
+    sendErrors,
     send: (message, sender = {}) => new Promise(resolve => listener(message, sender, resolve)),
     remove: id => removed(id),
   };
@@ -82,15 +94,20 @@ function worker() {
   assert.equal(other.housekeeping, false);
   assert.equal(other.preferredModel, 'GPT-5.6 Sol');
   for (const [index, step, label, reply, expected] of [
-    [1, 2, 'Improve', 'Goal in progress.', /Improve the agent harness/],
-    [2, 2, 'Improve', 'IMPROVE_FINISHED was mentioned.\nStill testing.', /IMPROVE_FINISHED/],
-    [3, 2, 'Improve', 'TASK_BLOCKED', /IMPROVE_BLOCKED/],
-    [4, 3, 'Housekeeping', 'Verified the new harness.\nIMPROVE_FINISHED', /HOUSEKEEPING_FINISHED/],
-    [5, 3, 'Housekeeping', 'HOUSEKEEPING_FINISHED\nStill consolidating.', /HOUSEKEEPING_BLOCKED/],
-    [6, 1, 'Goal', 'Need access to the archive.\nHOUSEKEEPING_BLOCKED', /Work on task 4 only\./],
+    [1, 1, 'Goal', 'Goal in progress.', /Work on task 4 only\./],
+    [2, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [3, 2, 'Improve', 'Goal in progress.', /Improve the agent harness/],
+    [4, 2, 'Improve', 'IMPROVE_FINISHED was mentioned.\nStill testing.', /IMPROVE_FINISHED/],
+    [5, 2, 'Improve', 'TASK_BLOCKED', /IMPROVE_BLOCKED/],
+    [6, 1, 'Goal', 'Verified the new harness.\nIMPROVE_FINISHED', /Goal contract/],
+    [7, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [8, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [9, 3, 'Housekeeping', 'Goal in progress.', /HOUSEKEEPING_FINISHED/],
+    [10, 3, 'Housekeeping', 'HOUSEKEEPING_FINISHED\nStill consolidating.', /HOUSEKEEPING_BLOCKED/],
+    [11, 1, 'Goal', 'Need access to the archive.\nHOUSEKEEPING_BLOCKED', /Work on task 4 only\./],
   ]) {
     if (index === 2) harness = worker();
-    if (index === 3) {
+    if (index === 5) {
       const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
       await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
       const resumed = await harness.send({ type: 'status', url: reviewUrl, responseKey: 'check-in',
@@ -118,8 +135,19 @@ function worker() {
   await harness.send({ type: 'setPaused', tabId: 4, paused: true });
   assert.equal((await harness.send({ ...sendNow, kind: 'improve' })).ok, true);
   assert.equal((await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl })).paused, true);
-  assert.equal((await harness.send({ ...sendNow, tabId: 5, url: 'https://chatgpt.com/c/5' })).ok, true);
+  harness.sendErrors.set(5, 'Could not establish connection. Receiving end does not exist.');
+  const off = { ...sendNow, tabId: 5, url: 'https://chatgpt.com/c/5' };
+  assert.equal((await harness.send(off)).ok, true, 'attach to an off tab after a confirmed missing listener');
+  assert.deepEqual(harness.attachments.filter(id => id === 5), [5]);
+  assert.equal(harness.deliveries.at(-1).options.frameId, 0);
+  assert.equal(harness.deliveries.filter(entry => entry.id === 5).length, 2);
   assert.equal((await harness.send({ type: 'isTargetTab' }, { tab: { id: 5 } })).target, false);
+  harness.sendErrors.set(5, 'The message port closed before a response was received.');
+  assert.equal((await harness.send(off)).ok, false);
+  assert.equal(harness.deliveries.filter(entry => entry.id === 5).length, 3, 'an ambiguous send must not be repeated');
+  const { events: diagnostics } = await harness.send({ type: 'getDiagnostics' });
+  assert.ok(diagnostics.some(entry => entry.tabId === 5 && entry.source === 'manual-contract'
+    && entry.contract === 'housekeeping' && entry.reason === 'command-unconfirmed'));
   assert.equal((await harness.send({ ...sendNow, url: 'https://chatgpt.com/c/other' })).ok, false);
   await harness.send({ type: 'setPaused', tabId: 4, paused: false });
   const checkpoint = 'The original goal is recorded here. Improve is still testing its new harness. '

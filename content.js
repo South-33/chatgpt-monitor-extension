@@ -765,15 +765,6 @@ function incompleteTurnKey() {
   return text ? `idle:${fingerprint(latestUserText() || text)}` : "";
 }
 
-function consecutiveBlockedResponses() {
-  let count = 0;
-  for (const turn of [...assistantTurns()].reverse()) {
-    if (terminalMarker(responseFromTurn(turn).text) !== "blocked") break;
-    count += 1;
-  }
-  return count;
-}
-
 function fingerprint(text) {
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -1399,12 +1390,25 @@ async function sendPrompt(text, requirePlugin = false, cyclePrompt = false) {
 }
 
 async function manualSwap(prompt, expectedUrl = location.href, cyclePrompt = false) {
-  if (manualActionRunning || !prompt || hasBlockingUi() || !sameConversation(expectedUrl)) return false;
+  if (!sameConversation(expectedUrl)) {
+    lastPromptFailureReason = "conversation-changed";
+    return false;
+  }
+  if (manualActionRunning || !prompt || hasBlockingUi()) {
+    lastPromptFailureReason = "composer-blocked";
+    return false;
+  }
   manualActionRunning = true;
   let ok = false;
   try {
-    if (!await waitFor(() => !scanRunning, 10000)) return false;
-    if (stopped || !sameConversation(expectedUrl) || hasBlockingUi()) return false;
+    if (!await waitFor(() => !scanRunning, 10000) || stopped) {
+      lastPromptFailureReason = "monitor-not-ready";
+      return false;
+    }
+    if (!sameConversation(expectedUrl) || hasBlockingUi()) {
+      lastPromptFailureReason = sameConversation(expectedUrl) ? "composer-blocked" : "conversation-changed";
+      return false;
+    }
     if (cyclePrompt && composerText(findComposer())) {
       lastPromptFailureReason = "composer-has-draft";
       return false;
@@ -1418,7 +1422,10 @@ async function manualSwap(prompt, expectedUrl = location.href, cyclePrompt = fal
       }
       await new Promise((resolve) => setTimeout(resolve, 600));
     }
-    if (!sameConversation(expectedUrl)) return false;
+    if (!sameConversation(expectedUrl)) {
+      lastPromptFailureReason = "conversation-changed";
+      return false;
+    }
     ok = await sendPrompt(prompt, false, cyclePrompt);
     return ok;
   } finally {
@@ -1638,7 +1645,7 @@ async function scan() {
     extendedThinkingLimitMs = Math.min(60, Math.max(1, Number(tabRole.thinkingMinutes) || 10)) * 60 * 1000;
     if (tabRole.pluginName) configuredPluginName = String(tabRole.pluginName).trim() || "DevSpace";
     if (!tabRole.target) {
-      if (!tabRole.cyclePromptPending) stopMonitor();
+      if (!tabRole.cyclePromptPending && !manualActionRunning) stopMonitor();
       return;
     }
 
@@ -1747,7 +1754,6 @@ async function scan() {
       type: "status",
       url: location.href,
       isGenerating: generating,
-      generationEnded,
       workedSeconds: workedSeconds(generationEnded),
       responseKey,
       recoveryKey,
@@ -1756,7 +1762,6 @@ async function scan() {
       latestResponseIsSubstantive,
       latestUserText: generating ? "" : latestUserText(),
       composerEmpty: generating ? false : !composerText(findComposer()),
-      consecutiveBlockedResponses: generating ? 0 : consecutiveBlockedResponses(),
     });
     if (await resolveMaterializationPermission()) return;
     if (result?.action && !manualActionRunning && !hasBlockingUi()

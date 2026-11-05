@@ -57,14 +57,13 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   assert.equal(local.runtime.states[64].lastResponseKey, '');
   const first = await send(status('first-block', blocked, '', true));
   assert.equal(first.action, 'sendTerminalReview');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, true);
   assert.equal(local.runtime.states[64].phase, 'sending-terminal-review');
   assert.equal(local.runtime.states[64].cycleTask, "",
     'reconsideration must not count against normal continuation cadence');
   assert.match(first.prompt, /exact blocker/i);
-  assert.match(first.prompt, /clean and current/i);
-  assert.match(first.prompt, /TASK_FINISHED/);
-  assert.match(first.prompt, /TASK_BLOCKED/);
+  assert.match(first.prompt, /Reconsider contract/i);
+  assert.match(first.prompt, /RECONSIDER_FINISHED/);
+  assert.match(first.prompt, /RECONSIDER_BLOCKED/);
   assert.doesNotMatch(first.prompt, /system message/i,
     'terminal review is an ordinary user-level instruction, not a fake system prompt');
   const { events } = await send({ type: 'getDiagnostics' });
@@ -79,7 +78,6 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   const restarted = worker();
   assert.equal((await restarted(status('first-block', blocked, '', true))).action, undefined);
   assert.equal(local.runtime.states[64].phase, 'sending-terminal-review');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, true);
 
   // Failed prompt send retries the exact review, not a normal continuation.
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: false, url });
@@ -91,6 +89,19 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url });
   assert.equal(local.runtime.states[64].phase, 'waiting-for-terminal-review');
 
+  const interrupted = await restarted({
+    type: 'status', url, recoveryKey: 'interrupted-review', recoveryReason: 'connection-interrupted',
+    latestResponseText: '', composerEmpty: true,
+  });
+  assert.equal(interrupted.action, 'sendTerminalReview');
+  assert.equal(interrupted.prompt, first.prompt, 'an interrupted review keeps its own contract');
+  await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url });
+
+  const missingMarker = await restarted(status('review-wrong-marker', blocked, first.prompt));
+  assert.equal(missingMarker.action, 'sendTerminalReview');
+  assert.equal(missingMarker.prompt, first.prompt, 'a Goal marker cannot close Reconsider');
+  await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url });
+
   // A prior reply and an incompletely rendered review cannot advance the flow.
   assert.equal((await restarted(status('older', 'Earlier answer.', 'Old message'))).action, undefined);
   assert.equal((await restarted(status('review-partial', '', first.prompt))).action, undefined);
@@ -98,19 +109,17 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
 
   // Real reconsideration may find a path forward and resume normal work.
   const resumed = await restarted(status('review-answer',
-    'I found an authorized method to complete the requested validation. I tested the method.', first.prompt));
+    'I found an authorized method to complete the requested validation. I tested the method.\nRECONSIDER_CONTINUE', first.prompt));
   assert.equal(resumed.action, 'sendContinue');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, false,
-    'a successful reconsideration resets the budget for a later blocked episode');
+  assert.equal(local.runtime.states[64].terminalReviewPrompt, '');
   await restarted({ type: 'commandResult', action: 'sendContinue', ok: true, url });
 
   // A later genuine block after more work is a new episode and gets exactly
   // one reconsideration. If that reconsideration is also blocked, stop.
   const laterReview = await restarted(status('later-block', blocked, 'Previously submitted continuation'));
   assert.equal(laterReview.action, 'sendTerminalReview');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, true);
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url });
-  assert.equal((await restarted(status('later-review-blocked', blocked, laterReview.prompt))).action, undefined);
+  assert.equal((await restarted(status('later-review-blocked', 'Access is still required.\nRECONSIDER_BLOCKED', laterReview.prompt))).action, undefined);
   assert.equal(local.runtime.states[64].taskStatus, 'blocked');
   assert.equal(local.runtime.states[64].paused, true);
   assert.equal((await restarted(status('later-review-blocked', blocked, laterReview.prompt))).action, undefined);
@@ -118,7 +127,6 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   // Explicit Resume starts a fresh authorized attempt; terminal marker from
   // the prior turn does not trigger another immediate reconsideration.
   await restarted({ type: 'setPaused', tabId: 64, paused: false });
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, false);
   const manual = await restarted(status('later-review-blocked', blocked, '', true));
   assert.equal(manual.action, 'sendContinue');
 
@@ -128,7 +136,7 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   assert.equal(newChat.action, 'sendTerminalReview');
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url: otherUrl }, otherUrl);
   const completedReview = await restarted({ ...status('review-finished',
-    'The original goal is now fully verified.\nTASK_FINISHED', newChat.prompt), url: otherUrl }, otherUrl);
+    'The original goal is now fully verified.\nRECONSIDER_FINISHED', newChat.prompt), url: otherUrl }, otherUrl);
   assert.equal(completedReview.action, undefined,
     'verified completion after reconsideration must stop instead of inventing more work');
   assert.equal(local.runtime.states[64].taskStatus, 'finished');
@@ -139,14 +147,13 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   const finished = await restarted(status('finished', 'Verified complete.\nTASK_FINISHED'));
   assert.equal(finished.action, 'sendTerminalReview');
   assert.match(finished.prompt, /acceptance criteria/i);
-  assert.match(finished.prompt, /clean and current/i);
+  assert.match(finished.prompt, /Reconsider contract/i);
   assert.notEqual(finished.prompt, first.prompt,
     'completion and blocker reviews must use distinct prompts');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, true);
   assert.equal(local.runtime.states[64].paused, false);
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true, url });
   const confirmedFinished = await restarted(status('finished-review',
-    'I rechecked the requested result and its verification. It is complete.\nTASK_FINISHED', finished.prompt));
+    'I rechecked the requested result and its verification. It is complete.\nRECONSIDER_FINISHED', finished.prompt));
   assert.equal(confirmedFinished.action, undefined,
     'a terminal marker in the review reply must stop without a second review');
   assert.equal(local.runtime.states[64].taskStatus, 'finished');
@@ -162,10 +169,9 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   await restarted({ type: 'commandResult', action: 'sendTerminalReview', ok: true,
     url: prematureUrl }, prematureUrl);
   const foundGap = await restarted({ ...status('premature-review',
-    'The final validation was not run. I can run it with the existing authorized tools.', premature.prompt),
+    'The final validation was not run. I can run it with the existing authorized tools.\nRECONSIDER_CONTINUE', premature.prompt),
     url: prematureUrl }, prematureUrl);
   assert.equal(foundGap.action, 'sendContinue');
-  assert.equal(local.runtime.states[64].terminalReviewAttempted, false);
   await restarted({ type: 'commandResult', action: 'sendContinue', ok: true,
     url: prematureUrl }, prematureUrl);
   const laterFinish = await restarted({ ...status('later-finish',
@@ -184,6 +190,9 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   const pause = finalEvents.find(entry => entry.reason === 'review-reply-unconfirmed');
   assert.equal(pause.reviewCheck, 'prompt-mismatch');
   assert.equal(pause.observedTerminal, 'blocked');
+  await restarted({ type: 'setPaused', tabId: 64, paused: false }, prematureUrl);
+  assert.equal((await restarted(unmatched, prematureUrl)).prompt, laterFinish.prompt,
+    'Resume retries an unconfirmed Reconsider contract');
 
   console.log('terminal_review_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

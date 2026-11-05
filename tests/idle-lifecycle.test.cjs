@@ -69,14 +69,14 @@ async function scenario({ error, baseline = 0, interruption = false }) {
     resetExtendedThinking: () => {},
     followLatestConversation: () => false,
     hasBlockingUi: () => false, composerText: () => draft,
-    terminalMarker: () => null, consecutiveBlockedResponses: () => 0,
+    terminalMarker: () => null,
     scheduleScan() {},
     async handleAction(action) {
       actions.push(action.action);
       await send({ type: 'commandResult', action: action.action, ok: true, url: sender.tab.url });
     },
   };
-  vm.runInNewContext(content.slice(content.indexOf('function streamRecoveryFailure'), content.indexOf('function consecutiveBlockedResponses')), sandbox);
+  vm.runInNewContext(content.slice(content.indexOf('function streamRecoveryFailure'), content.indexOf('function fingerprint')), sandbox);
   vm.runInNewContext(content.slice(content.indexOf('async function scan()'), content.indexOf('function scheduleScan')), sandbox);
   await sandbox.scan();
   assert.equal(actions.length, 0, 'a transient absence of Stop must settle first');
@@ -98,7 +98,6 @@ async function scenario({ error, baseline = 0, interruption = false }) {
   generating = true;
   sandbox.latestUserText = () => { throw new Error('generating must not scan user history'); };
   sandbox.composerText = () => { throw new Error('generating must not read a submission draft'); };
-  sandbox.consecutiveBlockedResponses = () => { throw new Error('generating must not scan blocked history'); };
   now += 10000;
   await sandbox.scan();
   now += 20000;
