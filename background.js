@@ -488,6 +488,7 @@ function handoffProgress(state) {
 }
 
 function thresholdReached(state) {
+  if (state.manualContractOnly) return false;
   const thresholdSeconds = Math.max(1, Number(settings.thresholdMinutes) || 130) * 60;
   return handoffProgress(state) >= thresholdSeconds;
 }
@@ -624,7 +625,7 @@ function cycleTasks(tabId, active) {
 }
 
 function cycleStage(tabId, task) {
-  const tasks = cycleTasks(tabId, task);
+  const tasks = states.get(tabId)?.manualContractOnly ? [task] : cycleTasks(tabId, task);
   const labels = { goal: "Goal", improve: "Improve", housekeeping: "Housekeeping" };
   return { step: tasks.indexOf(task || "goal") + 1, total: tasks.length, label: labels[task || "goal"] };
 }
@@ -715,6 +716,19 @@ function retryTransientAction(state) {
 
 function targetMatches(tabId) {
   return settings.enabled && settings.targetTabIds.includes(tabId);
+}
+
+async function stopMonitoringTab(tabId) {
+  settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
+  settings.enabled = settings.targetTabIds.length > 0;
+  states.delete(tabId);
+  lastSeenAt.delete(tabId);
+  lastDiagnosticHeartbeatAt.delete(tabId);
+  lastRecoveryAttemptAt.delete(tabId);
+  pendingHandoffs.delete(tabId);
+  syncKeepAwake();
+  await Promise.all([persistSettings(), persistRuntime()]);
+  void recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
 }
 
 async function injectTargetTab(tabId, direct = false) {
@@ -934,18 +948,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await persistRuntime();
         }
       } else {
-        const state = states.get(tabId);
-        if (state) state.activeStartedAt = null;
-        settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
-        settings.enabled = settings.targetTabIds.length > 0;
-        states.delete(tabId);
-        lastSeenAt.delete(tabId);
-        lastDiagnosticHeartbeatAt.delete(tabId);
-        lastRecoveryAttemptAt.delete(tabId);
-        pendingHandoffs.delete(tabId);
-        await Promise.all([persistSettings(), persistRuntime()]);
-        await recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
-        syncKeepAwake();
+        await stopMonitoringTab(tabId);
       }
       sendResponse({ ok: true, settings });
       return;
@@ -1106,8 +1109,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           result = await deliver();
         }
         failure = "command-unconfirmed";
-        const state = targetMatches(tabId) ? states.get(tabId) : null;
+        const startTemporary = result?.ok === true && !targetMatches(tabId);
+        const state = startTemporary ? getState(tabId, tab.url) : targetMatches(tabId) ? states.get(tabId) : null;
         if (result?.ok && state?.conversationKey === key && state.taskStatus === "ongoing") {
+          if (startTemporary) {
+            state.manualContractOnly = true;
+            state.historyScanned = true;
+            settings.targetTabIds.push(tabId);
+            settings.enabled = true;
+            lastSeenAt.set(tabId, Date.now());
+            syncKeepAwake();
+          }
           state.phase = "sending-continue";
           state.cycleTask = message.kind;
           state.pendingInstructionRefreshAt = null;
@@ -1123,7 +1135,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             state.resumePhase = state.phase;
             state.phase = "paused";
           }
-          await persistRuntime();
+          await Promise.all([persistRuntime(), startTemporary && persistSettings()]);
+          if (startTemporary) void recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
         }
         void recordDiagnostic("action-result", {
           ...diagnostic, success: result?.ok === true,
@@ -1356,6 +1369,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "isTargetTab") {
+      const current = states.get(tabId);
+      if (current?.manualContractOnly && message.url && !cyclePromptsInFlight.has(tabId)
+          && !pendingHandoffs.has(tabId) && !current.awaitingFreshConversation
+          && conversationKey(message.url) !== current.conversationKey) {
+        await stopMonitoringTab(tabId);
+      }
       const target = targetMatches(tabId);
       const now = Date.now();
       if (target) {
@@ -1423,20 +1442,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const instructionsAttached = Boolean(pendingHandoffs.get(tabId).instructions);
         pendingHandoffs.delete(tabId);
         if (states.get(tabId)?.oneShotHandoff) {
-          settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
-          settings.enabled = settings.targetTabIds.length > 0;
-          states.delete(tabId);
-          lastSeenAt.delete(tabId);
-          lastDiagnosticHeartbeatAt.delete(tabId);
-          lastRecoveryAttemptAt.delete(tabId);
-          await Promise.all([persistSettings(), persistRuntime()]);
-          await recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
-          syncKeepAwake();
+          await stopMonitoringTab(tabId);
         } else {
           const previous = states.get(tabId);
           const freshState = newState(sender.tab?.url || message.url || "", previous, tabId);
           freshState.cycleTask = previous?.cycleTask || "goal";
           freshState.goalTurns = previous?.goalTurns || 0;
+          freshState.manualContractOnly = previous?.manualContractOnly;
           freshState.awaitingFreshConversation = !freshState.conversationKey.includes("/c/");
           states.set(tabId, freshState);
           await persistRuntime();
@@ -1644,6 +1656,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    const current = states.get(tabId);
+    if (current?.manualContractOnly && !current.awaitingFreshConversation
+        && conversationKey(url) !== current.conversationKey) {
+      await stopMonitoringTab(tabId);
+      sendResponse({});
+      return;
+    }
     const state = getState(tabId, url);
     if (state.paused) {
       if (state.activeStartedAt) {
@@ -1979,6 +1998,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         void recordDiagnostic("cycle-step-ended", {
           tabId, contract: state.cycleTask, observedTerminal: outcome,
         });
+        if (state.manualContractOnly) {
+          await stopMonitoringTab(tabId);
+          sendResponse({});
+          return;
+        }
         state.goalTurns = 0;
         const tasks = cycleTasks(tabId, state.cycleTask);
         state.cycleTask = tasks[tasks.indexOf(state.cycleTask) + 1] || "goal";

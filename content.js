@@ -1639,7 +1639,7 @@ async function scan() {
   const scannedUrl = location.href;
   scanRunning = true;
   try {
-    const tabRole = await sendRuntime({ type: "isTargetTab" });
+    const tabRole = await sendRuntime({ type: "isTargetTab", url: scannedUrl });
     // A transient service-worker wakeup failure is not proof that this tab lost ownership.
     if (!tabRole) return;
     extendedThinkingLimitMs = Math.min(60, Math.max(1, Number(tabRole.thinkingMinutes) || 10)) * 60 * 1000;

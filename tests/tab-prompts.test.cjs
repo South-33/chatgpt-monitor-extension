@@ -81,6 +81,9 @@ function worker() {
     url: 'https://chatgpt.com/c/5', kind: 'housekeeping' })).ok, true);
   assert.match(harness.deliveries.at(-1).prompt,
     /\*\*BAD\*\*\n> refactor\(stash\)[\s\S]*\*\*GOOD\*\*\n> fix\(web\): stashed prompts now survive switching providers/);
+  await harness.send({ type: 'status', url: 'https://chatgpt.com/c/5', responseKey: 'initial-cleanup',
+    latestResponseText: 'The work is organized.\nHOUSEKEEPING_FINISHED',
+  }, { tab: { id: 5, url: 'https://chatgpt.com/c/5' } });
   const globalInstructions = '# Working Styles\nKeep scope focused.\n\n# Git\nCommit one coherent decision.\n\n### Example\nExplain what changed and why.\n\n# Project AGENTS.md\nRead project rules.';
   const importResult = await harness.send({ type: 'saveAgentInstructions', text: globalInstructions });
   assert.equal(importResult.hasGit, true);
@@ -145,13 +148,30 @@ function worker() {
   assert.deepEqual(harness.attachments.filter(id => id === 5), [5]);
   assert.equal(harness.deliveries.at(-1).options.frameId, 0);
   assert.equal(harness.deliveries.filter(entry => entry.id === 5).length, 2);
-  assert.equal((await harness.send({ type: 'isTargetTab' }, { tab: { id: 5 } })).target, false);
+  const temporarySender = { tab: { id: 5, url: off.url } };
+  const temporaryReply = (responseKey, latestResponseText) => harness.send({
+    type: 'status', url: off.url, responseKey, latestResponseText, workedSeconds: 18000, composerEmpty: true,
+  }, temporarySender);
+  assert.equal((await harness.send({ type: 'isTargetTab' }, temporarySender)).target, true);
+  assert.deepEqual({ ...(await harness.send({ type: 'getMonitorStatus', tabId: 5, url: off.url })).cycleStage },
+    { step: 1, total: 1, label: 'Housekeeping' });
+  const followUp = await temporaryReply('partial-cleanup', 'The docs still need consolidation.');
+  assert.equal(followUp.action, 'sendContinue');
+  assert.match(followUp.prompt, /HOUSEKEEPING_FINISHED/);
+  await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: off.url }, temporarySender);
   harness.sendErrors.set(5, 'The message port closed before a response was received.');
   assert.equal((await harness.send(off)).ok, false);
   assert.equal(harness.deliveries.filter(entry => entry.id === 5).length, 3, 'an ambiguous send must not be repeated');
   const { events: diagnostics } = await harness.send({ type: 'getDiagnostics' });
   assert.ok(diagnostics.some(entry => entry.tabId === 5 && entry.source === 'manual-contract'
     && entry.contract === 'housekeeping' && entry.reason === 'command-unconfirmed'));
+  harness = worker();
+  assert.equal((await temporaryReply('cleanup-finished', 'The docs are consolidated.\nHOUSEKEEPING_FINISHED')).action, undefined);
+  assert.equal((await harness.send({ type: 'getMonitorStatus', tabId: 5, url: off.url })).status, 'off');
+  assert.equal((await harness.send({ type: 'isTargetTab' }, reviewSender)).target, true);
+  assert.equal((await harness.send({ ...off, kind: 'improve' })).ok, true);
+  assert.equal((await temporaryReply('improve-blocked', 'The benchmark needs access.\nIMPROVE_BLOCKED')).action, undefined);
+  assert.equal((await harness.send({ type: 'isTargetTab' }, temporarySender)).target, false);
   assert.equal((await harness.send({ ...sendNow, url: 'https://chatgpt.com/c/other' })).ok, false);
   await harness.send({ type: 'setPaused', tabId: 4, paused: false });
   const checkpoint = 'The original goal is recorded here. Improve is still testing its new harness. '

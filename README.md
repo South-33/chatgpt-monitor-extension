@@ -11,7 +11,7 @@ Chrome extension that continues a ChatGPT task and carries its checkpoint into a
 Drag the top slider to set how much time the current chat has already used toward handoff. You can set it before monitoring starts.
 
 Each round runs your **Goal** prompt, two Goal continuations, **Improve**, then **Housekeeping**. The monitor skips disabled reviews and repeats each enabled review until it reports finished or blocked. A Goal finish or block starts **Reconsider**, which verifies whether to stop or return to Goal.
-Either arrow stops the current reply and sends its prompt. Monitoring stays as it was.
+Either arrow stops the current reply and sends its prompt. If monitoring is off, the monitor runs just that contract and turns off when it finishes or reports a blocker.
 
 Model, reasoning, and cycle controls apply to the current tab. Prompt text, plugin, and both timers are shared.
 Hover over the cycle number to see the current stage name.
