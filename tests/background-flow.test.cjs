@@ -544,19 +544,11 @@ function send(message, sender = {}) {
   const toolOnlyStatus = await send({ type: "getMonitorStatus", tabId: 12, url: toolOnlyTab.tab.url });
   assert.match(toolOnlyStatus.issue, /waiting for ChatGPT/i);
 
-
-  const manualContinueResult = await send({ type: "manualContinue", tabId: 12 });
-  assert.equal(manualContinueResult.ok, true);
-  assert.equal(sentToContent.at(-1).tabId, 12);
-  assert.equal(sentToContent.at(-1).message.type, "manualContinue");
-
   // Monitoring a second tab must not detach the first one.
   const firstStillOwned = await send({ type: "isTargetTab" }, { tab: { id: 7, url: "https://chatgpt.com/c/continued" } });
   const secondStillOwned = await send({ type: "isTargetTab" }, { tab: { id: 12, url: toolOnlyTab.tab.url } });
   assert.equal(firstStillOwned.target, true);
   assert.equal(secondStillOwned.target, true);
-  const multiStatus = await send({ type: "getMonitorStatus", tabId: 12, url: toolOnlyTab.tab.url });
-  assert.ok(multiStatus.monitoredCount >= 2);
 
   await send({ type: "setMonitoring", enabled: true, tabId: 20, url: "https://chatgpt.com/c/handoff-a" });
   await send({ type: "setMonitoring", enabled: true, tabId: 21, url: "https://chatgpt.com/c/handoff-b" });

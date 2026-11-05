@@ -6,6 +6,7 @@ const event = () => ({ addListener() {} });
 
 const local = {};
 let listener;
+let writeLog = async () => true;
 const chrome = {
   runtime: { onInstalled: event(), onStartup: event(),
     onMessage: { addListener(fn) { listener = fn; } } },
@@ -17,7 +18,8 @@ const chrome = {
     async sendMessage() { return { ok: true }; }, onRemoved: event() },
   alarms: { create() {}, onAlarm: event() },
 };
-vm.runInNewContext(background, { chrome, console, URL, Date });
+vm.runInNewContext(background, { chrome, console, URL, Date,
+  AgentMonitorLogFiles: { append: entry => writeLog(entry) } });
 const send = (message, tabId) => new Promise(resolve => listener(message,
   { tab: { id: tabId, url: `https://chatgpt.com/c/${tabId}` } }, resolve));
 const url = tabId => `https://chatgpt.com/c/${tabId}`;
@@ -64,8 +66,22 @@ const reply = 'The agent completed the first investigation and recorded the test
   assert.equal(prior.action, undefined, 'unacknowledged continuation cannot dispatch a second prompt');
   assert.equal(local.runtime.states[2].phase, 'sending-continue');
 
-  await send({ type: 'commandResult', action: 'sendContinue', ok: false,
-    reason: 'composer-blocked', url: url(2) }, 2);
+  let releaseLog;
+  const blockedWrite = new Promise(resolve => { releaseLog = resolve; });
+  writeLog = () => blockedWrite;
+  let timeout;
+  try {
+    await Promise.race([
+      send({ type: 'commandResult', action: 'sendContinue', ok: false,
+        reason: 'composer-blocked', url: url(2) }, 2),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Log write blocked command acknowledgement')), 500);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    releaseLog(true);
+  }
   const diagnostics = await send({ type: 'getDiagnostics' }, 2);
   const failedSend = diagnostics.events.findLast(entry =>
     entry.event === 'action-result' && entry.tabId === 2 && entry.success === false);

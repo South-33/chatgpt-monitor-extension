@@ -138,7 +138,7 @@ function showNotice(text, isError = false) {
 
 function renderStatus(result) {
   currentStatus = result;
-  const monitoring = result.enabled && result.isCurrentTab;
+  const monitoring = result.isCurrentTab;
   const paused = monitoring && result.paused;
   const stage = monitoring ? result.cycleStage : null;
   cycleStage.hidden = !stage;
@@ -385,7 +385,7 @@ progress.addEventListener("pointercancel", () => {
 monitorButton.addEventListener("click", async () => {
   await refreshStatus();
   if (!activeTab || !isChatUrl(activeTab.url)) { showNotice("Open a ChatGPT tab first.", true); return; }
-  const stopCurrent = currentStatus?.enabled && currentStatus?.isCurrentTab;
+  const stopCurrent = currentStatus?.isCurrentTab;
   const result = await chrome.runtime.sendMessage({
     type: "setMonitoring", enabled: !stopCurrent, tabId: activeTab.id, url: activeTab.url,
   });

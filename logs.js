@@ -128,7 +128,7 @@ async function updateAgentInstructions(message) {
     if (!result?.ok) throw new Error(result?.error || 'Could not access global instructions.');
     clearAgentInstructions.hidden = !result.configured;
     agentInstructionsStatus.textContent = result.configured
-      ? result.hasGit ? 'Imported. Git section found.' : 'Imported. Using default Git guidance.'
+      ? result.hasGit ? 'Imported. Git section found.' : 'Imported. Using the bundled Git example.'
       : 'No file imported.';
   } catch (error) {
     agentInstructionsStatus.textContent = error.message;

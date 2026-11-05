@@ -1440,28 +1440,6 @@ async function manualSwap(prompt, expectedUrl = location.href, cyclePrompt = fal
   }
 }
 
-async function manualContinue(prompt, expectedUrl = location.href) {
-  if (manualActionRunning || !prompt || isGenerating() || hasBlockingUi()
-      || !sameConversation(expectedUrl)) return false;
-  manualActionRunning = true;
-  let ok = false;
-  try {
-    if (!await waitFor(() => !scanRunning, 10000)) return false;
-    if (!sameConversation(expectedUrl)) return false;
-    ok = await sendPrompt(prompt);
-    return ok;
-  } finally {
-    await sendRuntime({
-      type: "commandResult",
-      action: "sendContinue",
-      ok,
-      reason: ok ? undefined : lastPromptFailureReason,
-      url: location.href,
-    });
-    manualActionRunning = false;
-  }
-}
-
 async function waitForSettledAssistantResponse(timeoutMs = 8000, stableMs = 2000) {
   const initial = latestAssistantResponse();
   const initialTurn = initial.turn?.getAttribute("data-testid")
@@ -1816,10 +1794,9 @@ function handleVisibilityChange() {
 
 function handleRuntimeMessage(message, _sender, sendResponse) {
   const cyclePrompt = message.type === "sendCyclePrompt";
-  if (!cyclePrompt && message.type !== "manualSwap" && message.type !== "manualContinue") return false;
-  const operation = message.type === "manualContinue" ? manualContinue : manualSwap;
+  if (!cyclePrompt && message.type !== "manualSwap") return false;
   if (cyclePrompt) lastPromptFailureReason = "unknown";
-  operation(message.prompt, message.expectedUrl, cyclePrompt)
+  manualSwap(message.prompt, message.expectedUrl, cyclePrompt)
     .then((ok) => sendResponse({ ok, reason: ok || !cyclePrompt ? undefined : lastPromptFailureReason }))
     .catch(() => sendResponse({ ok: false }));
   return true;

@@ -52,7 +52,7 @@ async function sendNow({ stopSucceeds, draft = '' }) {
     },
     sendRuntime() { assert.fail('a direct send must not report itself as a handoff'); },
   };
-  vm.runInNewContext(source.slice(source.indexOf('async function manualSwap'), source.indexOf('async function manualContinue')), sandbox);
+  vm.runInNewContext(source.slice(source.indexOf('async function manualSwap'), source.indexOf('async function waitForSettledAssistantResponse')), sandbox);
   return { ok: await sandbox.manualSwap('Improve', url, true), events };
 }
 

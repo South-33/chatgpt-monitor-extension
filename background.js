@@ -7,7 +7,6 @@ const DEFAULT_SETTINGS = {
   reviewWorkflow: false,
   housekeeping: false,
   globalAgentInstructions: "",
-  enabled: false,
   targetTabIds: [],
   thresholdMinutes: 130,
   thinkingMinutes: 10,
@@ -23,9 +22,6 @@ const DEFAULT_SETTINGS = {
 
 };
 
-const LEGACY_GOAL_CONTRACT =
-  "Completion contract: Work only toward the original user's goal and constraints. Complete useful, authorized steps and verify results; do not invent extra work. When the original goal is complete and verified, end with TASK_FINISHED on a line by itself. If you cannot proceed without user action after checking reasonable alternatives, explain the blocker and end with TASK_BLOCKED on a line by itself. Otherwise use neither marker and keep working on the original goal.";
-
 const CONTINUE_TERMINAL_NOTE =
   "If the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.";
 
@@ -33,9 +29,6 @@ const GOAL_CONTRACT = `Goal contract\n${CONTINUE_TERMINAL_NOTE} Otherwise use ne
 
 const AUTOMATION_NOTE =
   "This is an automated continuation. Use your judgment. Pick up the original goal from its current state and apply the guidance below where it helps.";
-
-const LEGACY_AUTOMATION_NOTE =
-  "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
 
 const HOUSEKEEPING_GUIDANCE =
   "Make the active work easy to find, understand, and maintain. Use your judgment to consolidate scattered work and remove redundant code, tests, docs, or artifacts where it helps. Preserve useful checks, unique evidence, and unrelated work. Finish when the next person or agent can pick up the work easily and further cleanup would add little value.";
@@ -59,14 +52,9 @@ const GIT_INSTRUCTIONS_HEADER = "\n\nGit guidance from global AGENTS.md\n";
 
 function customContinueText(text) {
   const original = String(text || "");
-  let cleaned = promptWithoutInstructions(original.trim())
-    .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
-    .trim();
-  const preamble = [AUTOMATION_NOTE, LEGACY_AUTOMATION_NOTE].find(note => cleaned.startsWith(note));
-  if (preamble) cleaned = cleaned.slice(preamble.length).trim();
-  const contract = [GOAL_CONTRACT, LEGACY_GOAL_CONTRACT, CONTINUE_TERMINAL_NOTE]
-    .find(note => cleaned.endsWith(note));
-  if (contract) cleaned = cleaned.slice(0, -contract.length).trim();
+  let cleaned = promptWithoutInstructions(original).trim();
+  if (cleaned.startsWith(AUTOMATION_NOTE)) cleaned = cleaned.slice(AUTOMATION_NOTE.length).trim();
+  if (cleaned.endsWith(GOAL_CONTRACT)) cleaned = cleaned.slice(0, -GOAL_CONTRACT.length).trim();
   return cleaned === original.trim() ? original : cleaned;
 }
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
@@ -145,6 +133,7 @@ const lastRecoveryAttemptAt = new Map();
 const pendingHandoffs = new Map();
 const manualSwapsInFlight = new Set();
 const cyclePromptsInFlight = new Set();
+const SENDING_PHASES = new Set(["sending-continue", "sending-handoff", "sending-terminal-review"]);
 const MAX_DIAGNOSTIC_EVENTS = 500;
 const DIAGNOSTIC_EVENTS = new Set([
   "approval_detected", "approval_resolved", "approval_pending",
@@ -171,8 +160,7 @@ const DIAGNOSTIC_EVENTS = new Set([
 ]);
 const DIAGNOSTIC_PROMPT_MODES = new Set(["recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
 const CONTENT_DIAGNOSTIC_REASONS = new Set([
-  "timer-started", "notice-or-generation-ended", "notice-disappeared", "generation-ended", "monitor-reset",
-  "configured-limit", "ten-minute-limit",
+  "timer-started", "notice-disappeared", "generation-ended", "monitor-reset", "configured-limit",
   "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
   "permission-card", "conversation-scope",
   "chevron-not-ready", "chevron-missing", "conversation-option-not-found", "card-did-not-close",
@@ -207,9 +195,7 @@ function recordDiagnostic(event, details = {}) {
   const enumFields = {
     source: new Set([
       "automatic", "completed-response", "stream-recovery", "action-retry",
-      "extended-thinking-watchdog", "extended-thinking-retry",
-      "extended-thinking-handoff-priority",
-      "extended-thinking-threshold", "manual-continue", "manual-contract", "manual-handoff",
+      "extended-thinking-watchdog", "manual-continue", "manual-contract", "manual-handoff",
       "incomplete-handoff", "terminal-review",
     ]),
     action: new Set([
@@ -302,7 +288,7 @@ async function initialize() {
   settings.targetTabIds = Array.isArray(settings.targetTabIds)
     ? [...new Set(settings.targetTabIds.filter(Number.isInteger))]
     : [];
-  settings.enabled = settings.targetTabIds.length > 0;
+  delete settings.enabled;
 
   settings.handoffPrompt = DEFAULT_SETTINGS.handoffPrompt;
   const previousPresets = settings.continuePresets;
@@ -313,14 +299,12 @@ async function initialize() {
   settings.continuePresetIndex = Number.isInteger(settings.continuePresetIndex)
     && settings.continuePresetIndex >= 0 && settings.continuePresetIndex < 4
     ? settings.continuePresetIndex : 0;
-  settings.continuePrompt = settings.continuePresets[settings.continuePresetIndex];
   const tabProfiles = {};
   for (const [id, profile] of Object.entries(settings.tabContinuePresets || {})) {
     if (!/^\d+$/.test(id) || !Number.isInteger(profile?.index) || profile.index < 0 || profile.index > 3) continue;
     tabProfiles[id] = { index: profile.index };
   }
   settings.tabContinuePresets = tabProfiles;
-  settings.continuePrompt = settings.continuePresets[settings.continuePresetIndex];
   if (!savedSettings.settings || settingsChanged) {
     await chrome.storage.local.set({ settings });
   }
@@ -329,35 +313,6 @@ async function initialize() {
   for (const [tabId, state] of Object.entries(runtime.states || {})) {
     const id = Number(tabId);
     state.tabId = id;
-    const blockedReviewMigration = state.blockedReviewAttempted === true
-      || ["sending-block-review", "waiting-for-block-review"].includes(state.phase);
-    const persistedReviewPhase = [
-      "sending-block-review", "waiting-for-block-review",
-      "sending-terminal-review", "waiting-for-terminal-review",
-    ].includes(state.phase);
-    if (persistedReviewPhase && !state.terminalReviewPrompt && state.actionPrompt) {
-      state.terminalReviewPrompt = state.actionPrompt;
-    }
-    // 1.5.44 used blocker-only review names. Preserve an in-flight review
-    // during the 1.5.45 upgrade, then persist only the current state shape.
-    if (state.phase === "sending-block-review") state.phase = "sending-terminal-review";
-    if (state.phase === "waiting-for-block-review") state.phase = "waiting-for-terminal-review";
-    delete state.terminalReviewAttempted;
-    if (!state.terminalReviewKind && blockedReviewMigration) {
-      state.terminalReviewKind = "blocked";
-    }
-    delete state.blockedReviewAttempted;
-    if (!state.cycleTask && state.cycleStage?.label === "Improve harness") state.cycleTask = "improve";
-    if (!state.cycleTask && state.cycleStage?.label === "Housekeeping") state.cycleTask = "housekeeping";
-    if (!state.cycleTask && state.cycleStage?.label === "Follow-through") {
-      state.cycleTask = state.cycleStage.step === 4 && controlsForTab(id).reviewWorkflow ? "improve" : "housekeeping";
-    }
-    delete state.cycleStage;
-    delete state.lastCustomContinue;
-    delete state.genericContinuesRemaining;
-    delete state.pendingNormalContinue;
-    delete state.queuedPrompt;
-    delete state.lastReview;
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -391,7 +346,7 @@ async function persistRuntime() {
 
 function syncKeepAwake() {
   if (!chrome.power) return;
-  if (settings.enabled && settings.targetTabIds.length > 0) {
+  if (settings.targetTabIds.length) {
     chrome.power.requestKeepAwake("system");
   } else {
     chrome.power.releaseKeepAwake();
@@ -689,7 +644,7 @@ function markTransientActionAccepted(state) {
 }
 
 function transientActionTimedOut(state, now = Date.now()) {
-  return ["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state?.phase)
+  return SENDING_PHASES.has(state?.phase)
     && (!state.actionStartedAt || now - state.actionStartedAt >= 30000);
 }
 
@@ -715,17 +670,20 @@ function retryTransientAction(state) {
 }
 
 function targetMatches(tabId) {
-  return settings.enabled && settings.targetTabIds.includes(tabId);
+  return settings.targetTabIds.includes(tabId);
 }
 
-async function stopMonitoringTab(tabId) {
+function removeMonitoringTab(tabId) {
   settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
-  settings.enabled = settings.targetTabIds.length > 0;
   states.delete(tabId);
   lastSeenAt.delete(tabId);
   lastDiagnosticHeartbeatAt.delete(tabId);
   lastRecoveryAttemptAt.delete(tabId);
   pendingHandoffs.delete(tabId);
+}
+
+async function stopMonitoringTab(tabId) {
+  removeMonitoringTab(tabId);
   syncKeepAwake();
   await Promise.all([persistSettings(), persistRuntime()]);
   void recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
@@ -755,26 +713,16 @@ function ensureRecoveryAlarm() {
 }
 
 async function validateTargetTabs() {
-  if (!settings.enabled) return;
-  const valid = [];
+  if (!settings.targetTabIds.length) return;
   for (const tabId of settings.targetTabIds) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (isChatUrl(tab.url)) {
-        valid.push(tabId);
-        continue;
-      }
+      if (isChatUrl(tab.url)) continue;
     } catch {
       // This monitored tab no longer exists.
     }
-    states.delete(tabId);
-    lastSeenAt.delete(tabId);
-    lastDiagnosticHeartbeatAt.delete(tabId);
-    lastRecoveryAttemptAt.delete(tabId);
-    pendingHandoffs.delete(tabId);
+    removeMonitoringTab(tabId);
   }
-  settings.targetTabIds = valid;
-  settings.enabled = valid.length > 0;
   await Promise.all([persistSettings(), persistRuntime()]);
   syncKeepAwake();
 }
@@ -805,6 +753,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.url && sender.tab?.url
         && conversationKey(message.url) !== conversationKey(sender.tab.url)) {
       sendResponse({ ok: false });
+      return;
+    }
+    const senderTabId = sender.tab?.id;
+    const senderUrl = message.url || sender.tab?.url;
+    const current = states.get(senderTabId);
+    if (current?.manualContractOnly && senderUrl && !cyclePromptsInFlight.has(senderTabId)
+        && !pendingHandoffs.has(senderTabId) && !current.awaitingFreshConversation
+        && conversationKey(senderUrl) !== current.conversationKey) {
+      await stopMonitoringTab(senderTabId);
+      sendResponse({ target: false, ok: false });
       return;
     }
 
@@ -916,7 +874,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         settings.continuePresetIndex = index;
       }
       settings.continuePresets = profile.presets;
-      settings.continuePrompt = profile.presets[settings.continuePresetIndex];
       await persistSettings();
       sendResponse({ ok: true, settings });
       return;
@@ -936,10 +893,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.handoffOffsetSeconds = existing.handoffOffsetSeconds;
         }
         if (!settings.targetTabIds.includes(tabId)) settings.targetTabIds.push(tabId);
-        settings.enabled = true;
         states.set(tabId, state);
         await Promise.all([persistSettings(), persistRuntime()]);
-        await recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
+        void recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
         syncKeepAwake();
         const attached = await injectTargetTab(tabId);
         if (!attached) {
@@ -1001,7 +957,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const progressState = saved?.conversationKey === conversationKey(message.url) ? saved : null;
       const lastSeen = isCurrentTab ? lastSeenAt.get(tabId) || 0 : 0;
       const stale = isCurrentTab && Date.now() - lastSeen >= 15000;
-      const recoveryProtected = ["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state?.phase)
+      const recoveryProtected = SENDING_PHASES.has(state?.phase)
         && !transientActionTimedOut(state);
       const lastAttempt = lastRecoveryAttemptAt.get(tabId) || 0;
       if (stale && !recoveryProtected && !cyclePromptsInFlight.has(tabId) && Date.now() - lastAttempt >= 10000) {
@@ -1009,8 +965,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await injectTargetTab(tabId);
       }
       sendResponse({
-        enabled: settings.enabled,
-        monitoredCount: settings.targetTabIds.length,
         isCurrentTab,
         currentTabSupported: isChatUrl(message.url),
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
@@ -1057,7 +1011,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       state.phase = paused ? "paused" : state.resumePhase || "watching";
       await persistRuntime();
-      await recordDiagnostic("pause-changed", { tabId, reason: paused ? "paused" : "resumed", phase: state.phase });
+      void recordDiagnostic("pause-changed", { tabId, reason: paused ? "paused" : "resumed", phase: state.phase });
       sendResponse({ ok: true, paused: state.paused });
       return;
     }
@@ -1074,6 +1028,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       cyclePromptsInFlight.add(tabId);
+      const wasMonitored = targetMatches(tabId);
       const diagnostic = {
         tabId, source: "manual-contract", action: "sendContinue",
         contract: message.kind, promptMode: promptKind("sendContinue", basePrompt),
@@ -1109,14 +1064,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           result = await deliver();
         }
         failure = "command-unconfirmed";
-        const startTemporary = result?.ok === true && !targetMatches(tabId);
-        const state = startTemporary ? getState(tabId, tab.url) : targetMatches(tabId) ? states.get(tabId) : null;
+        const startTemporary = !wasMonitored && !targetMatches(tabId);
+        const wasTemporary = states.get(tabId)?.manualContractOnly;
+        const state = result?.ok && (startTemporary || targetMatches(tabId)) ? getState(tabId, tab.url) : null;
         if (result?.ok && state?.conversationKey === key && state.taskStatus === "ongoing") {
-          if (startTemporary) {
+          if (startTemporary || wasTemporary) {
             state.manualContractOnly = true;
             state.historyScanned = true;
+          }
+          if (startTemporary) {
             settings.targetTabIds.push(tabId);
-            settings.enabled = true;
             lastSeenAt.set(tabId, Date.now());
             syncKeepAwake();
           }
@@ -1214,12 +1171,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return;
           }
           settings.targetTabIds.push(tabId);
-          settings.enabled = true;
           const oneShot = newState(tab.url, null, tabId);
           oneShot.oneShotHandoff = true;
           states.set(tabId, oneShot);
           await Promise.all([persistSettings(), persistRuntime()]);
-          await recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
+          void recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
           syncKeepAwake();
           needsAttachment = true;
         }
@@ -1239,7 +1195,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (state.paused) {
           state.paused = false;
           state.resumePhase = null;
-          await recordDiagnostic("pause-changed", { tabId, reason: "resumed", phase: state.phase });
+          void recordDiagnostic("pause-changed", { tabId, reason: "resumed", phase: state.phase });
         }
         state.recoveryCheckPrompt = "";
         state.handoffShortRetryUsed = false;
@@ -1257,15 +1213,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             : { ok: false, error: "Could not stop the response or submit the handoff." });
         } catch {
           if (needsAttachment) {
-            settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
-            settings.enabled = settings.targetTabIds.length > 0;
-            states.delete(tabId);
-            lastSeenAt.delete(tabId);
-            lastDiagnosticHeartbeatAt.delete(tabId);
-            lastRecoveryAttemptAt.delete(tabId);
-            await Promise.all([persistSettings(), persistRuntime()]);
-            await recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
-            syncKeepAwake();
+            await stopMonitoringTab(tabId);
             sendResponse({ ok: false, error: "Could not reach this ChatGPT tab. Refresh it and retry." });
           } else {
             state.phase = "watching";
@@ -1280,51 +1228,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message.type === "manualContinue") {
-      const tabId = Number(message.tabId);
-      if (cyclePromptsInFlight.has(tabId)) {
-        sendResponse({ ok: false, error: "Another prompt is already in progress." });
-        return;
-      }
-      if (!targetMatches(tabId)) {
-        sendResponse({ ok: false, error: "No task is being monitored." });
-        return;
-      }
-      if (pendingHandoffs.has(tabId)) {
-        sendResponse({ ok: false, error: "A captured handoff is awaiting delivery. Use Retry to resume it." });
-        return;
-      }
-      const state = getState(tabId, states.get(tabId)?.url || "");
-      if (state.paused) {
-        sendResponse({ ok: false, error: "Resume monitoring before continuing manually." });
-        return;
-      }
-      if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
-        sendResponse({ ok: false, error: "This task has already stopped." });
-        return;
-      }
-      state.recoveryCheckPrompt = "";
-      const manualContinuePrompt = requestContinue(state, undefined, "manual-continue").prompt;
-      await persistRuntime();
-      try {
-        const result = await chrome.tabs.sendMessage(tabId, {
-          type: "manualContinue",
-          prompt: manualContinuePrompt,
-          expectedUrl: state.url,
-        });
-        sendResponse(result?.ok === true
-          ? { ok: true }
-          : { ok: false, error: "Could not confirm the continuation was submitted." });
-      } catch {
-        state.phase = "watching";
-        state.issue = "Could not reach the monitored page. Refresh ChatGPT and retry.";
-        await persistRuntime();
-        sendResponse({ ok: false, error: state.issue });
-      }
-      return;
-    }
-
-    const tabId = sender.tab?.id;
+    const tabId = senderTabId;
 
     if (message.type === "modelPreferenceResult") {
       if (targetMatches(tabId)) {
@@ -1338,14 +1242,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
           state.modelPreferenceIssue = "";
           if (message.verifiedForSend || message.changed) {
-            await recordDiagnostic(message.verifiedForSend ? "model-selection-verified" : "model-selection-changed", {
+            void recordDiagnostic(message.verifiedForSend ? "model-selection-verified" : "model-selection-changed", {
               tabId, success: true, model: message.model, reasoning: message.reasoning, changed: message.changed,
             });
           }
         } else if (issues[message.reason]) {
           state.modelPreferenceIssue = issues[message.reason];
           state.issue = state.modelPreferenceIssue;
-          if (!message.repeated) await recordDiagnostic("model-selection-failed", { tabId, reason: message.reason, success: false });
+          if (!message.repeated) void recordDiagnostic("model-selection-failed", { tabId, reason: message.reason, success: false });
         }
         await persistRuntime();
       }
@@ -1358,7 +1262,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           && DIAGNOSTIC_EVENTS.has(message.event)
           && (message.event.startsWith("watchdog-") || message.event.startsWith("approval_"))
           && CONTENT_DIAGNOSTIC_REASONS.has(message.reason)) {
-        await recordDiagnostic(message.event, {
+        void recordDiagnostic(message.event, {
           tabId,
           reason: message.reason,
           elapsedMs: message.elapsedMs,
@@ -1369,12 +1273,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "isTargetTab") {
-      const current = states.get(tabId);
-      if (current?.manualContractOnly && message.url && !cyclePromptsInFlight.has(tabId)
-          && !pendingHandoffs.has(tabId) && !current.awaitingFreshConversation
-          && conversationKey(message.url) !== current.conversationKey) {
-        await stopMonitoringTab(tabId);
-      }
       const target = targetMatches(tabId);
       const now = Date.now();
       if (target) {
@@ -1453,7 +1351,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           states.set(tabId, freshState);
           await persistRuntime();
         }
-        await recordDiagnostic("handoff-delivered", { tabId, instructionsAttached });
+        void recordDiagnostic("handoff-delivered", { tabId, instructionsAttached });
       }
       sendResponse({ ok: true });
       return;
@@ -1473,7 +1371,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.phase = "opening-new-chat";
         state.issue = "";
         await persistRuntime();
-        await recordDiagnostic("handoff-captured", { tabId });
+        void recordDiagnostic("handoff-captured", { tabId });
         sendResponse({ ok: true });
         return;
       }
@@ -1498,7 +1396,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } else {
             state.issue = "";
             state.sendFailures = 0;
-            if (["sending-handoff", "sending-continue", "sending-terminal-review"].includes(state.phase)) state.retryAt = Date.now();
+            if (SENDING_PHASES.has(state.phase)) state.retryAt = Date.now();
           }
           await persistRuntime();
         }
@@ -1514,7 +1412,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const state = getState(tabId, message.url || sender.tab?.url || "");
       if (message.type === "extendedThinkingStopFailed") {
-        await recordDiagnostic("watchdog-stop-failed", {
+        void recordDiagnostic("watchdog-stop-failed", {
           tabId,
           reason: "stop-control-remained-visible",
           elapsedMs: settings.thinkingMinutes * 60 * 1000,
@@ -1551,7 +1449,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         const state = getState(tabId, message.url || sender.tab?.url || "");
-        await recordDiagnostic("action-result", {
+        void recordDiagnostic("action-result", {
           tabId,
           source: state.actionSource || "automatic",
           action: message.action,
@@ -1588,7 +1486,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "send-not-confirmed": "Could not confirm that ChatGPT sent the handoff. Check for an unsent draft before Retry.",
           };
           if (message.action === "deliverHandoff") {
-            await recordDiagnostic("prompt-submission-failed", {
+            void recordDiagnostic("prompt-submission-failed", {
               tabId, reason: message.reason || "unknown", phase: state.phase,
             });
           }
@@ -1656,13 +1554,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const current = states.get(tabId);
-    if (current?.manualContractOnly && !current.awaitingFreshConversation
-        && conversationKey(url) !== current.conversationKey) {
-      await stopMonitoringTab(tabId);
-      sendResponse({});
-      return;
-    }
     const state = getState(tabId, url);
     if (state.paused) {
       if (state.activeStartedAt) {
@@ -1743,8 +1634,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state.phase)
-        && !state.retryAt) {
+    if (SENDING_PHASES.has(state.phase) && !state.retryAt) {
       // An old response may remain visible until the submitted prompt starts
       // its own turn. Do not act on it before a real send acknowledgement.
       if (transientActionTimedOut(state)) {
@@ -1801,8 +1691,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.actionPrompt = "";
         state.actionStartedAt = null;
         state.retryAt = null;
-        await recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
-        await recordDiagnostic("pause-changed", { tabId, reason: "unreadable-check-in", phase: "paused" });
+        void recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
+        void recordDiagnostic("pause-changed", { tabId, reason: "unreadable-check-in", phase: "paused" });
         await persistRuntime();
         sendResponse({});
         return;
@@ -1858,7 +1748,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.phase = "paused";
         state.resumeContinuePending = true;
         state.issue = "Could not verify the final review reply. Resume to retry Reconsider.";
-        await recordDiagnostic("pause-changed", {
+        void recordDiagnostic("pause-changed", {
           tabId, phase: state.phase, reason: "review-reply-unconfirmed", reviewCheck,
           observedTerminal: terminalStatus(message.latestResponseText),
           elapsedMs: Date.now() - state.terminalReviewIdleSince,
@@ -1873,16 +1763,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({});
       return;
     }
-    const legacyReview = reconsidering && state.terminalReviewPrompt
-      && !state.terminalReviewPrompt.includes("RECONSIDER_CONTINUE");
-    const reviewOutcome = reconsidering
-      ? terminalStatus(message.latestResponseText, legacyReview ? "goal" : "reconsider") || (legacyReview ? "continue" : null)
-      : null;
+    const reviewOutcome = reconsidering ? terminalStatus(message.latestResponseText, "reconsider") : null;
     if (reconsidering) {
       if (message.composerEmpty === false) { sendResponse({}); return; }
       if (!reviewOutcome) {
         state.lastResponseKey = message.responseKey;
-        const action = requestTerminalReview(state, state.terminalReviewKind, state.terminalReviewPrompt);
+        const action = requestTerminalReview(state, state.terminalReviewKind);
         await persistRuntime();
         sendResponse(action);
         return;
@@ -1916,7 +1802,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.terminalReviewKind = "";
       state.terminalReviewPrompt = "";
       state.issue = "";
-      await recordDiagnostic("pause-changed", { tabId, reason: terminal, phase: "paused" });
+      void recordDiagnostic("pause-changed", { tabId, reason: terminal, phase: "paused" });
       await persistRuntime();
       sendResponse({});
       return;
@@ -2028,17 +1914,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await ready;
-  states.delete(tabId);
-  lastSeenAt.delete(tabId);
-  lastDiagnosticHeartbeatAt.delete(tabId);
-  lastRecoveryAttemptAt.delete(tabId);
-  pendingHandoffs.delete(tabId);
+  removeMonitoringTab(tabId);
   delete settings.tabContinuePresets?.[tabId];
   delete settings.tabControls?.[tabId];
-  if (settings.targetTabIds.includes(tabId)) {
-    settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
-    settings.enabled = settings.targetTabIds.length > 0;
-  }
   await persistSettings();
   await persistRuntime();
   syncKeepAwake();
@@ -2047,7 +1925,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "monitor-recovery") return;
   await ready;
-  if (!settings.enabled) return;
+  if (!settings.targetTabIds.length) return;
 
   syncKeepAwake();
 
@@ -2056,10 +1934,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     const lastSeen = lastSeenAt.get(tabId) || 0;
     if (Date.now() - lastSeen < 30000) continue;
     const state = states.get(tabId);
-    if (
-      ["sending-continue", "sending-handoff"].includes(state?.phase)
-      && !transientActionTimedOut(state)
-    ) continue;
+    if (SENDING_PHASES.has(state?.phase) && !transientActionTimedOut(state)) continue;
     await injectTargetTab(tabId);
   }
 });

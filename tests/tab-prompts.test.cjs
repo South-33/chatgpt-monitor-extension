@@ -172,6 +172,11 @@ function worker() {
   assert.equal((await harness.send({ ...off, kind: 'improve' })).ok, true);
   assert.equal((await temporaryReply('improve-blocked', 'The benchmark needs access.\nIMPROVE_BLOCKED')).action, undefined);
   assert.equal((await harness.send({ type: 'isTargetTab' }, temporarySender)).target, false);
+  assert.equal((await harness.send(off)).ok, true);
+  const otherChat = { tab: { id: 5, url: 'https://chatgpt.com/c/different-chat' } };
+  await harness.send({ type: 'historyScanComplete', url: otherChat.tab.url, workedSeconds: 30 }, otherChat);
+  assert.equal((await harness.send({ type: 'isTargetTab' }, otherChat)).target, false,
+    'a temporary contract cannot become regular monitoring in a different chat');
   assert.equal((await harness.send({ ...sendNow, url: 'https://chatgpt.com/c/other' })).ok, false);
   await harness.send({ type: 'setPaused', tabId: 4, paused: false });
   const checkpoint = 'The original goal is recorded here. Improve is still testing its new harness. '
@@ -211,12 +216,7 @@ function worker() {
   assert.equal(checkIn.prompt.includes('automated continuation'), false, 'recovery keeps its short status check');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   assert.equal(local.runtime.states[2].cycleTask, beforeRecovery, 'check-ins do not advance the cycle');
-  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text:
-    'this is a automated system message((user may include alot of prompting in this system message and it might be sent too often. so reason well in ur context to know when or when not to care for these extra notes/messages).\n\nWork on task 2 only.' });
-  assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
-    'remove the duplicated automation preamble while preserving the custom task notes');
-  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text:
-    'This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.\n\nWork on task 2 only.\n\nIf the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.' });
+  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: generic1.prompt });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
     'current generated wrappers are stripped when pasted back into a preset');
   await harness.send({ type: 'setMonitoring', enabled: false, tabId: 1 });

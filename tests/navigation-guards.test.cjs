@@ -107,7 +107,7 @@ async function backgroundChecks() {
   assert.equal(lateAck.ok, false);
   assert.equal(local.runtime.states[23].phase, 'sending-continue');
 
-  const manual = await send({ type: 'manualContinue', tabId: 23 }, sender(newUrl));
+  const manual = await send({ type: 'sendCyclePrompt', kind: 'improve', tabId: 23, url: oldUrl });
   assert.equal(manual.ok, false,
     'missing content-script acknowledgement must not be presented as a successful manual send');
 }

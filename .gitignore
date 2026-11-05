@@ -1,3 +1,4 @@
 # Generated diagnostics may contain local activity metadata.
 logs/*.jsonl
 logs/*.log
+logs/*.crswap
