@@ -8,6 +8,7 @@ Chrome extension that continues a ChatGPT task and carries its checkpoint into a
 4. After an update, reload the extension and refresh the monitored ChatGPT tabs.
 
 **Pause** keeps the timer and lets you resume later. **Handoff** starts a fresh chat with a checkpoint. Review any approval shown by ChatGPT before resuming.
+Drag the top slider to set how much time the current chat has already used toward handoff. You can set it before monitoring starts.
 
 The cycle starts with your prompt and a Continue turn. **Improve** and **Housekeeping** each add their own turn followed by time to finish that step. With both off, the cycle uses two Continue turns.
 

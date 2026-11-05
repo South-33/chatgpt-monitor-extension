@@ -807,6 +807,22 @@ function send(message, sender = {}) {
   assert.equal(afterPausedHandoff.paused, false);
   assert.equal(afterPausedHandoff.phase, "sending-handoff");
 
+  const adjustedUrl = "https://chatgpt.com/c/adjusted-handoff";
+  const adjustedTab = { tab: { id: 34, url: adjustedUrl } };
+  const adjust = minutes => send({ type: "setHandoffProgress", tabId: 34, url: adjustedUrl, minutes });
+  const readTimer = () => send({ type: "getMonitorStatus", tabId: 34, url: adjustedUrl });
+  assert.equal((await adjust(120)).ok, true);
+  assert.equal((await readTimer()).handoffSeconds, 7200, "show the adjustment before monitoring starts");
+  await send({ type: "setMonitoring", enabled: true, tabId: 34, url: adjustedUrl });
+  await send({ type: "historyScanComplete", url: adjustedUrl, workedSeconds: 8000 }, adjustedTab);
+  assert.equal((await readTimer()).handoffSeconds, 7200, "history does not add to an explicit adjustment");
+  assert.equal((await readTimer()).workedSeconds, 8000, "actual work stays available independently");
+  const due = await adjust(130);
+  assert.equal(due.ok, true);
+  const next = await send({ type: "status", url: adjustedUrl, responseKey: "adjusted-timer",
+    latestResponseText: "The work can continue.", composerEmpty: true }, adjustedTab);
+  assert.equal(next.action, "sendHandoff", "the adjusted timer determines when handoff is due");
+
   console.log("background_flow_ok");
 })().catch((error) => {
   console.error(error);

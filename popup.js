@@ -1,7 +1,6 @@
 const taskStatus = document.querySelector("#taskStatus");
 const statusDetail = document.querySelector("#statusDetail");
 const progress = document.querySelector("#progress");
-const progressFill = document.querySelector("#progressFill");
 const workedText = document.querySelector("#workedText");
 const retryButton = document.querySelector("#retryButton");
 const monitorButton = document.querySelector("#monitorButton");
@@ -40,6 +39,7 @@ const PHASE_LABELS = {
 };
 
 let activeTab = null;
+let handoffEdit = null;
 let popupTabId = null;
 let currentStatus = null;
 let presets = [];
@@ -108,23 +108,24 @@ function formatCountdown(milliseconds) {
   return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
 }
 
-function renderProgress(result, monitoringThisTab, paused, workedSeconds, thresholdSeconds) {
+function thinkingCountdown(result, monitoringThisTab, paused) {
   const startedAt = Number(result.extendedThinkingStartedAt);
   const limitMs = Number(result.extendedThinkingLimitMs) || 10 * 60 * 1000;
   const thinking = monitoringThisTab && !paused && !result.issue && result.isGenerating
     && Number.isFinite(startedAt) && startedAt > 0;
   const elapsedMs = thinking ? Math.max(0, Date.now() - startedAt) : 0;
   const remainingMs = thinking ? Math.max(0, limitMs - elapsedMs) : 0;
-  const percent = thinking
-    ? Math.min(100, elapsedMs / limitMs * 100)
-    : Math.min(100, workedSeconds / thresholdSeconds * 100);
-  progress.classList.toggle("thinking", thinking);
-  progress.setAttribute("aria-label", thinking ? "Thinking recovery progress" : "Handoff progress");
-  progress.setAttribute("aria-valuenow", String(Math.round(percent)));
-  progressFill.style.width = `${percent}%`;
   return thinking
     ? remainingMs ? `Check-in in ${formatCountdown(remainingMs)}` : "Stopping, then asking for an update"
     : "";
+}
+
+function renderHandoffProgress(minutes, thresholdMinutes) {
+  progress.max = thresholdMinutes;
+  progress.value = minutes;
+  progress.style.setProperty("--handoff-fill", `${Math.min(100, minutes / thresholdMinutes * 100)}%`);
+  progress.setAttribute("aria-valuetext", `${Math.min(minutes, thresholdMinutes)} of ${thresholdMinutes} minutes`);
+  workedText.textContent = `${formatMinutes(minutes * 60)} / ${thresholdMinutes}m`;
 }
 
 function showNotice(text, isError = false) {
@@ -154,10 +155,13 @@ function renderStatus(result) {
     button.setAttribute("aria-pressed", String(queued));
     button.title = queued ? "Queued. Click to cancel." : button.getAttribute("aria-label");
   }
-  const thresholdSeconds = Math.max(60, Number(result.thresholdMinutes || threshold.value || 130) * 60);
-  const workedSeconds = Number(result.workedSeconds) || 0;
-  workedText.textContent = `${formatMinutes(workedSeconds)} / ${Math.round(thresholdSeconds / 60)}m`;
-  const countdown = renderProgress(result, monitoring, paused, workedSeconds, thresholdSeconds);
+  progress.disabled = Boolean(result.lookupFailed) || !isConversationUrl(activeTab?.url);
+  if (!handoffEdit || handoffEdit.url !== activeTab?.url) {
+    const limit = Math.max(1, Math.round(Number(result.thresholdMinutes || threshold.value || 130)));
+    const minutes = Math.floor((Number(result.handoffSeconds ?? result.workedSeconds) || 0) / 60);
+    renderHandoffProgress(minutes, limit);
+  }
+  const countdown = thinkingCountdown(result, monitoring, paused);
 
   let label = "Off";
   let detail = "";
@@ -357,6 +361,28 @@ async function load() {
     chooseLogFolderButton.hidden = false;
   } catch { logFolderStatus.textContent = "Logs: unavailable"; }
 }
+
+progress.addEventListener("input", () => {
+  if (!activeTab) return;
+  handoffEdit = { tabId: activeTab.id, url: activeTab.url, minutes: progress.valueAsNumber };
+  renderHandoffProgress(handoffEdit.minutes, Number(progress.max));
+});
+progress.addEventListener("change", async () => {
+  const edit = handoffEdit;
+  if (!edit) return;
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "setHandoffProgress", ...edit });
+    if (!result?.ok) showNotice(result?.error || "Could not set handoff time.", true);
+  } catch { showNotice("Could not set handoff time.", true); }
+  finally {
+    if (handoffEdit === edit) handoffEdit = null;
+    await refreshStatus();
+  }
+});
+progress.addEventListener("pointercancel", () => {
+  handoffEdit = null;
+  void refreshStatus();
+});
 
 monitorButton.addEventListener("click", async () => {
   await refreshStatus();

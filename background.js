@@ -460,22 +460,32 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
   };
 }
 
-function workedTotal(state, now = Date.now()) {
+function trackedWork(state, now = Date.now()) {
   if (!state) return 0;
   const active = state.activeStartedAt
     ? Math.max(0, (now - state.activeStartedAt) / 1000)
     : 0;
+  return (Number(state.trackedSeconds) || 0) + active;
+}
+
+function workedTotal(state, now = Date.now()) {
+  if (!state) return 0;
   const baseline = Math.max(
     Number(state.historyWorkedSeconds) || 0,
     Number(state.maxWorkedSeconds) || 0,
   );
   return Math.max(baseline, (Number(state.historyWorkedSeconds) || 0)
-    + (Number(state.trackedSeconds) || 0) + active);
+    + trackedWork(state, now));
+}
+
+function handoffProgress(state) {
+  if (!Number.isFinite(state?.handoffOffsetSeconds)) return workedTotal(state);
+  return Math.max(0, state.handoffOffsetSeconds + trackedWork(state));
 }
 
 function thresholdReached(state) {
   const thresholdSeconds = Math.max(1, Number(settings.thresholdMinutes) || 130) * 60;
-  return workedTotal(state) >= thresholdSeconds;
+  return handoffProgress(state) >= thresholdSeconds;
 }
 
 function getState(tabId, url) {
@@ -938,9 +948,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "Open a ChatGPT tab first." });
           return;
         }
+        const existing = states.get(tabId);
+        const state = newState(message.url, null, tabId);
+        if (!targetMatches(tabId) && existing?.conversationKey === state.conversationKey
+            && Number.isFinite(existing.handoffOffsetSeconds)) {
+          state.handoffOffsetSeconds = existing.handoffOffsetSeconds;
+        }
         if (!settings.targetTabIds.includes(tabId)) settings.targetTabIds.push(tabId);
         settings.enabled = true;
-        states.set(tabId, newState(message.url, null, tabId));
+        states.set(tabId, state);
         await Promise.all([persistSettings(), persistRuntime()]);
         await recordDiagnostic("monitoring-changed", { tabId, reason: "started" });
         syncKeepAwake();
@@ -968,6 +984,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message.type === "setHandoffProgress") {
+      const { tabId, url, minutes } = message;
+      if (!Number.isInteger(tabId) || !isConversationUrl(url) || !Number.isFinite(minutes)) {
+        sendResponse({ ok: false, error: "Open a ChatGPT conversation first." });
+        return;
+      }
+      const existing = states.get(tabId);
+      if (targetMatches(tabId) && existing?.conversationKey !== conversationKey(url)) {
+        sendResponse({ ok: false, error: "The monitored chat changed. Try again once it loads." });
+        return;
+      }
+      const state = getState(tabId, url);
+      const seconds = Math.min(settings.thresholdMinutes, Math.max(0, Math.round(minutes))) * 60;
+      // The slider sets a new baseline. Future history scans must not add
+      // the old conversation's time back on top of it.
+      state.handoffOffsetSeconds = seconds - trackedWork(state);
+      await persistRuntime();
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message.type === "thinkingNoticeTimer") {
       const tabId = sender.tab?.id;
       const hasStartedAt = message.startedAt !== null && message.startedAt !== undefined;
@@ -990,6 +1027,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = Number(message.tabId);
       const isCurrentTab = targetMatches(tabId);
       const state = isCurrentTab ? states.get(tabId) : null;
+      const saved = states.get(tabId);
+      const progressState = saved?.conversationKey === conversationKey(message.url) ? saved : null;
       const lastSeen = isCurrentTab ? lastSeenAt.get(tabId) || 0 : 0;
       const stale = isCurrentTab && Date.now() - lastSeen >= 15000;
       const recoveryProtected = ["sending-continue", "sending-handoff", "sending-terminal-review"].includes(state?.phase)
@@ -1016,6 +1055,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
         extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,
         workedSeconds: workedTotal(state),
+        handoffSeconds: handoffProgress(progressState),
         thresholdMinutes: settings.thresholdMinutes,
         issue: state?.issue || "",
         logFileError,

@@ -9,43 +9,33 @@ const end = source.indexOf("function showNotice", start);
 assert.ok(start >= 0 && end > start, "progress renderer not found");
 
 let now = 1_000_000;
-const classes = new Set();
 const attributes = new Map();
 const sandbox = {
   Date: { now: () => now },
   progress: {
-    classList: { toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); } },
     setAttribute(name, value) { attributes.set(name, value); },
+    style: { setProperty(name, value) { attributes.set(name, value); } },
   },
-  progressFill: { style: { width: "" } },
+  workedText: {},
+  formatMinutes: seconds => `${Math.floor(seconds / 60)}m`,
 };
-vm.runInNewContext(`${source.slice(start, end)}; this.renderProgress = renderProgress;`, sandbox);
+vm.runInNewContext(source.slice(start, end), sandbox);
 
 const result = { extendedThinkingStartedAt: null, extendedThinkingLimitMs: 600_000, isGenerating: true };
-let detail = sandbox.renderProgress(result, true, false, 4500, 9000);
-assert.equal(detail, "");
-assert.equal(sandbox.progressFill.style.width, "50%");
-assert.equal(attributes.get("aria-label"), "Handoff progress");
+assert.equal(sandbox.thinkingCountdown(result, true, false), "");
+sandbox.renderHandoffProgress(75, 150);
+assert.equal(sandbox.progress.value, 75);
+assert.equal(attributes.get("--handoff-fill"), "50%");
 
 result.extendedThinkingStartedAt = now - 60_000;
-detail = sandbox.renderProgress(result, true, false, 4500, 9000);
-assert.equal(detail, "Check-in in 9:00");
-assert.equal(sandbox.progressFill.style.width, "10%");
-assert.ok(classes.has("thinking"));
-assert.equal(attributes.get("aria-label"), "Thinking recovery progress");
+assert.equal(sandbox.thinkingCountdown(result, true, false), "Check-in in 9:00");
 
 now = result.extendedThinkingStartedAt + result.extendedThinkingLimitMs;
-detail = sandbox.renderProgress(result, true, false, 4500, 9000);
-assert.equal(detail, "Stopping, then asking for an update");
-assert.equal(sandbox.progressFill.style.width, "100%");
+assert.equal(sandbox.thinkingCountdown(result, true, false), "Stopping, then asking for an update");
 
-detail = sandbox.renderProgress(result, true, true, 4500, 9000);
-assert.equal(detail, "");
-assert.ok(!classes.has("thinking"));
+assert.equal(sandbox.thinkingCountdown(result, true, true), "");
 result.isGenerating = false;
-detail = sandbox.renderProgress(result, true, false, 4500, 9000);
-assert.equal(detail, "");
-assert.equal(sandbox.progressFill.style.width, "50%");
+assert.equal(sandbox.thinkingCountdown(result, true, false), "");
 
 console.log("thinking_timer_ui_ok");
 
@@ -57,7 +47,8 @@ const statusSandbox = {
   ...controls, threshold: { value: 400 }, activeTab: { url: "https://chatgpt.com/c/test" },
   cycleStage: { setAttribute() {} },
   sendNowButtons: [],
-  formatMinutes: () => "0m", renderProgress: () => "", PHASE_LABELS: {},
+  progress: {}, handoffEdit: null,
+  renderHandoffProgress() {}, thinkingCountdown: () => "", PHASE_LABELS: {},
   isConversationUrl: () => true, logFolderName: "logs",
 };
 vm.runInNewContext(source.slice(source.indexOf("function renderStatus"), source.indexOf("function isChatUrl")), statusSandbox);

@@ -22,9 +22,11 @@
       .status-detail { margin-top: 5px; color: var(--muted); font-size: 12px; }
       .status-detail[hidden] { display: none; }
       .status-detail.error { color: var(--red); }
-      .progress { height: 4px; margin-top: 6px; overflow: hidden; border-radius: 99px; background: #2b3038; }
-      .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s ease; }
-      .progress.thinking > div { background: var(--orange); }
+      .progress { appearance: none; display: block; width: 100%; height: 16px; margin: 0; background: transparent; cursor: ew-resize; }
+      .progress::-webkit-slider-runnable-track { height: 4px; border-radius: 99px; background: linear-gradient(to right, var(--accent) var(--handoff-fill, 0%), #2b3038 var(--handoff-fill, 0%)); }
+      .progress::-webkit-slider-thumb { appearance: none; width: 10px; height: 10px; margin-top: -3px; border-radius: 50%; background: var(--accent); }
+      .progress:disabled { cursor: default; }
+      .progress:disabled::-webkit-slider-thumb { opacity: 0; }
       .actions { display: flex; gap: 8px; margin-top: 8px; }
       .actions button { flex: 1; }
       .monitor-button { background: var(--accent); color: #101421; border-color: transparent; }
@@ -66,7 +68,7 @@
     <section class="status-card">
       <div class="status-row"><span class="task-status" id="taskStatus">Connecting</span><span class="worked" id="workedText">0m / 130m</span></div>
       <div class="status-detail" id="statusDetail" hidden></div>
-      <div class="progress" id="progress" role="progressbar" aria-label="Handoff progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill"></div></div>
+      <input class="progress" id="progress" type="range" min="0" max="130" value="0" aria-label="Handoff progress" title="Drag to set minutes already worked toward handoff" disabled />
       <button class="retry-button" id="retryButton">Retry</button>
     </section>
     <div class="actions"><button class="monitor-button" id="monitorButton" disabled>Monitor this tab</button><button class="pause-button" id="pauseButton">Pause</button><button class="swap-button" id="swapButton">Handoff</button></div>
