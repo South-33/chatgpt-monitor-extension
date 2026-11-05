@@ -1125,13 +1125,20 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     lastPromptFailureReason = 'plugin-selection-lost';
     return false;
   }
-  if (!modelReady) {
-    lastPromptFailureReason = 'model-preference';
+  if (!modelReady || (requirePlugin && !handoffModelReady(ownership))) {
+    lastPromptFailureReason = modelReady ? 'model-unconfirmed' : 'model-preference';
     return false;
   }
   const button = findSendButton(composer);
   if (sendButtonReady(button)) {
+    const verification = requirePlugin && ownership.enforceModelPreferences !== false
+      && (ownership.preferredModel || ownership.preferredReasoning) && {
+        type: "modelPreferenceResult", ok: true, verifiedForSend: true,
+        model: ownership.preferredModel, reasoning: ownership.preferredReasoning,
+        ...composerModelEvidence(verifiedModelSelection?.trigger), changed: verifiedModelSelection?.changed,
+      };
     HTMLButtonElement.prototype.click.call(button);
+    if (verification) void sendRuntime(verification);
     if (await waitFor(submitted, 10000)) return true;
   }
   lastPromptFailureReason = 'send-not-confirmed';
@@ -1154,7 +1161,7 @@ function modelPickerTrigger() {
   if (!toolbar) return null;
   return [...toolbar.querySelectorAll('button')].find(button =>
     controlReady(button)
-      && /^(?:instant|medium|high)$/i.test(normalizedControlText(button.innerText || button.textContent || ''))) || null;
+      && /^(?:(?:5\.6|5\.5)\s+)?(?:instant|medium|high)$/i.test(normalizedControlText(button.innerText || button.textContent || ''))) || null;
 }
 
 function pickerMenu(trigger) {
@@ -1189,7 +1196,6 @@ function selectedReasoning(trigger, menu) {
   const fromSlider = (effortText.match(/\b(instant|medium|high)\b/i) || [])[1];
   if (fromSlider) return fromSlider.toLowerCase();
   const explicit = trigger?.getAttribute('data-selected-reasoning-effort')?.toLowerCase();
-  if (menu && explicit) return explicit;
   const status = pickerItems(menu, '[role="status"]').map(item => item.textContent).join(' ');
   const inMenu = (status.match(/\b(instant|medium|high)\b/i) || [])[1];
   if (inMenu) return inMenu.toLowerCase();
@@ -1198,6 +1204,34 @@ function selectedReasoning(trigger, menu) {
   const badge = compact.match(/\b(instant|medium|high)$/i);
   if (badge) return badge[1].toLowerCase();
   return explicit || '';
+}
+
+function composerModelEvidence(trigger) {
+  const badge = normalizedControlText(trigger?.innerText || trigger?.textContent || '')
+    .replace(/^Thinking effort\s*/i, '');
+  const label = badge.replace(/(?:^|\s+)(?:instant|medium|high)$/i, '');
+  const observedModel = label === '5.6' ? 'GPT-5.6 Sol' : label === '5.5' ? 'GPT-5.5'
+    : label || (/^(?:instant|medium|high)$/i.test(badge) ? 'GPT-6' : '');
+  return { observedModel, observedReasoning: selectedReasoning(trigger, null) };
+}
+
+function closedModelMatches(trigger, model) {
+  return modelLabel({ textContent: composerModelEvidence(trigger).observedModel }) === modelLabel({ textContent: model });
+}
+
+function closedReasoningMatches(trigger, reasoning) {
+  const explicit = trigger?.getAttribute('data-selected-reasoning-effort')?.toLowerCase();
+  return selectedReasoning(trigger, null) === reasoning && (!explicit || explicit === reasoning);
+}
+
+function handoffModelReady(preferences) {
+  if (preferences.enforceModelPreferences === false) return true;
+  const { preferredModel: model, preferredReasoning: reasoning } = preferences;
+  if (!model && !reasoning) return true;
+  const trigger = modelPickerTrigger();
+  return Boolean(trigger && verifiedModelSelection?.trigger === trigger && !controlMenuOpen(trigger)
+    && (!model || closedModelMatches(trigger, model))
+    && (!reasoning || closedReasoningMatches(trigger, reasoning)));
 }
 
 async function ensureModelPreferences(preferences, force = false, cyclePrompt = false) {
@@ -1309,29 +1343,33 @@ async function ensureModelPreferences(preferences, force = false, cyclePrompt = 
       menu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
       if (!await waitFor(() => !controlMenuOpen(trigger), 1000)) success = false;
     }
-    if (success && reasoning) {
-      reason = 'reasoning-unavailable';
+    if (success && (reasoning || (force && model))) {
+      reason = force && model ? 'model-unconfirmed' : 'reasoning-unavailable';
+      const committed = () => modelPickerTrigger() === trigger && !controlMenuOpen(trigger)
+        && (!force || !model || closedModelMatches(trigger, model))
+        && (!reasoning || closedReasoningMatches(trigger, reasoning));
       let matched = false;
       success = await waitFor(() => {
-        const ready = modelPickerTrigger() === trigger && !controlMenuOpen(trigger)
-          && selectedReasoning(trigger, null) === reasoning;
+        const ready = committed();
         const stable = matched && ready;
         matched = ready;
         return stable;
-      }, 1500) && await canAct()
-        && modelPickerTrigger() === trigger && selectedReasoning(trigger, null) === reasoning;
+      }, 1500) && await canAct() && committed();
+      if (!success && force && model && reasoning && modelPickerTrigger() === trigger
+          && closedModelMatches(trigger, model)) reason = 'reasoning-unavailable';
     }
     if (success) {
-      verifiedModelSelection = { trigger, key, signature: `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` };
+      verifiedModelSelection = { trigger, key, changed, signature: `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` };
       modelPreferenceFailure = '';
       modelPreferenceRetryAt = 0;
-      void sendRuntime({ type: 'modelPreferenceResult', ok: true, changed, verifiedForSend: force,
-        model, reasoning });
+      if (!force) void sendRuntime({ type: 'modelPreferenceResult', ok: true, changed, model, reasoning,
+        ...composerModelEvidence(trigger) });
     } else if (await canAct()) {
       modelPreferenceRetryAt = Date.now() + 30000;
       const repeated = modelPreferenceFailure === key;
       modelPreferenceFailure = key;
-      await sendRuntime({ type: 'modelPreferenceResult', ok: false, reason, repeated });
+      await sendRuntime({ type: 'modelPreferenceResult', ok: false, reason, repeated,
+        model, reasoning, ...composerModelEvidence(modelPickerTrigger()) });
     }
   }
   return success;
@@ -1557,8 +1595,7 @@ async function deliverPendingHandoff(preferences) {
     if (!sameConversation(expectedUrl)) return;
     let reason;
     if (!ready) reason = 'composer-unavailable';
-    else if (!await ensureModelPreferences(preferences)) reason = 'model-preference';
-    else if (sameConversation(expectedUrl) && !await selectConfiguredPlugin()) reason = 'plugin-selection-lost';
+    else if (!await selectConfiguredPlugin()) reason = 'plugin-selection-lost';
     if (reason) {
       await sendRuntime({ type: "commandResult", action: "deliverHandoff", ok: false,
         reason, url: expectedUrl });

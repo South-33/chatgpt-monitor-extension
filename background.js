@@ -217,7 +217,7 @@ function recordDiagnostic(event, details = {}) {
       "unreadable-check-in",
       "connection-interrupted", "stream-error", "missing-final-answer",
       "review-reply-unconfirmed",
-      "picker-unavailable", "model-unavailable", "reasoning-unavailable",
+      "picker-unavailable", "model-unavailable", "model-unconfirmed", "reasoning-unavailable",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
       "model-preference", "conversation-changed", "composer-changed",
       "composer-has-draft", "composer-insert-failed", "composer-text-mismatch",
@@ -246,9 +246,13 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isFinite(details.workedSeconds)) entry.workedSeconds = Math.max(0, Math.round(details.workedSeconds));
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
   if (details.instructionsAttached === true) entry.instructionsAttached = true;
-  if (event === "model-selection-changed" || event === "model-selection-verified") {
-    if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details.model)) entry.model = details.model;
-    if (["instant", "medium", "high"].includes(details.reasoning)) entry.reasoning = details.reasoning;
+  if (event.startsWith("model-selection-")) {
+    for (const field of ["model", "observedModel"]) {
+      if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details[field])) entry[field] = details[field];
+    }
+    for (const field of ["reasoning", "observedReasoning"]) {
+      if (["instant", "medium", "high"].includes(details[field])) entry[field] = details[field];
+    }
     if (typeof details.changed === "boolean") entry.changed = details.changed;
   }
 
@@ -1233,9 +1237,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "modelPreferenceResult") {
       if (targetMatches(tabId)) {
         const state = getState(tabId, sender.tab?.url || "");
+        const { model, reasoning, observedModel, observedReasoning, changed } = message;
+        const evidence = { tabId, model, reasoning, observedModel, observedReasoning, changed };
         const issues = {
           "picker-unavailable": "Waiting for the model picker. Retrying automatically.",
           "model-unavailable": "The selected model is unavailable. Check the model setting.",
+          "model-unconfirmed": "ChatGPT did not confirm the model on the composer. Retrying before sending.",
           "reasoning-unavailable": "The selected reasoning level is unavailable. Check the reasoning setting.",
         };
         if (message.ok) {
@@ -1243,13 +1250,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.modelPreferenceIssue = "";
           if (message.verifiedForSend || message.changed) {
             void recordDiagnostic(message.verifiedForSend ? "model-selection-verified" : "model-selection-changed", {
-              tabId, success: true, model: message.model, reasoning: message.reasoning, changed: message.changed,
+              ...evidence, success: true,
             });
           }
         } else if (issues[message.reason]) {
           state.modelPreferenceIssue = issues[message.reason];
           state.issue = state.modelPreferenceIssue;
-          if (!message.repeated) void recordDiagnostic("model-selection-failed", { tabId, reason: message.reason, success: false });
+          if (!message.repeated) void recordDiagnostic("model-selection-failed", { ...evidence, reason: message.reason, success: false });
         }
         await persistRuntime();
       }
@@ -1472,6 +1479,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "composer-insert-failed": "Could not insert the prompt into ChatGPT's composer. Refresh ChatGPT, then Retry.",
             "composer-text-mismatch": "ChatGPT did not retain the inserted prompt text. Refresh ChatGPT, then Retry.",
             "model-preference": "Could not verify the selected model before sending. Check the model settings.",
+            "model-unconfirmed": "The composer changed after model verification. Retrying before sending.",
             "composer-unavailable": "ChatGPT's composer is not available. Refresh the tab, then Retry.",
             "conversation-changed": "The monitored conversation changed before the prompt could be sent.",
             "composer-changed": "ChatGPT replaced the composer before the prompt could be sent.",

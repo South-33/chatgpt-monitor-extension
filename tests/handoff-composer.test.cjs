@@ -34,7 +34,7 @@ function editor(initialDraft = '') {
 
 const prompt = 'Another agent worked on this original task. Continue using the verified evidence.';
 
-async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true } = {}) {
+async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true, modelStaysReady = true } = {}) {
   const composer = editor(initialDraft);
   let inserted = 0;
   let sendAttempts = 0;
@@ -74,6 +74,9 @@ async function scenario(initialDraft = '', pluginPresent = true, { modelOk = tru
       return modelOk;
     },
     pluginSelected: () => pluginPresent,
+    handoffModelReady: () => modelStaysReady,
+    composerModelEvidence: () => ({ observedModel: 'GPT-6' }),
+    verifiedModelSelection: { changed: true },
     HTMLButtonElement: class { click() { sendAttempts++; } },
     clearComposer: async () => { cleared++; },
   };
@@ -101,7 +104,6 @@ async function deliveryScenario() {
     modelPickerTrigger: () => ({}),
     visible: () => true,
     waitFor: async predicate => predicate() || predicate(),
-    ensureModelPreferences: async () => { events.push('model'); return true; },
     latestUserMatchesPrompt: () => false,
     pluginSelected: () => pluginSelected,
     selectConfiguredPlugin: async () => { events.push('plugin'); pluginSelected = true; return true; },
@@ -147,12 +149,15 @@ async function deliveryScenario() {
   assert.equal(missingPlugin.context.lastPromptFailureReason, 'plugin-selection-lost');
 
   const fresh = await deliveryScenario();
-  assert.deepEqual(fresh.events, ['model', 'plugin', 'send:true', 'delivered']);
+  assert.deepEqual(fresh.events, ['plugin', 'send:true', 'delivered']);
   assert.equal(fresh.delivered, true);
 
   const modelFailure = await scenario('', true, { modelOk: false });
   assert.equal(modelFailure.context.lastPromptFailureReason, 'model-preference');
   assert.equal(modelFailure.delivered, false, 'handoff must not send when preferred model verification fails');
+  const modelReset = await scenario('', true, { modelStaysReady: false });
+  assert.equal(modelReset.context.lastPromptFailureReason, 'model-unconfirmed');
+  assert.equal(modelReset.sendAttempts, 0, 'a late composer model reset must block the actual Send click');
 
   const pluginLost = await scenario('', true, { modelKeepsPlugin: false });
   assert.equal(pluginLost.context.lastPromptFailureReason, 'plugin-selection-lost');

@@ -17,7 +17,8 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
     closest() { return this.inert ? {} : null; },
     focus() {},
   });
-  const trigger = node(compact ? 'High' : 'Thinking effort',
+  const badge = () => `${compact ? '' : 'Thinking effort\n'}${selected === 'GPT-5.6 Sol' ? '5.6 ' : ''}${effort[0].toUpperCase() + effort.slice(1)}`;
+  const trigger = node(badge(),
     compact ? { 'aria-haspopup': 'menu' } : { 'aria-label': 'Select ChatGPT model' });
   trigger.id = 'picker';
   trigger.getAttribute = name => ({ 'aria-controls': open ? 'menu' : null,
@@ -47,17 +48,25 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
     if (event.type !== 'keydown') return;
     const levels = ['instant', 'medium', 'high'];
     effort = levels[Math.max(0, Math.min(2, levels.indexOf(effort) + (event.key === 'ArrowRight' ? 1 : -1)))];
-    trigger.innerText = compact ? effort[0].toUpperCase() + effort.slice(1) : `${selected} ${effort}`;
   };
+  const status = node('', { role: 'status' });
   const menu = node('', { 'aria-labelledby': 'picker' });
   menu.querySelectorAll = selector => {
     if (menuDelayQueries > 0) { menuDelayQueries--; return []; }
     models.forEach(item => { item.inert = !advanced; });
     power.inert = toggle.inert = advanced;
+    status.textContent = effort;
+    status.inert = advanced;
+    if (selector === '[role="status"]') return [status];
     if (selector.includes('[aria-checked=')) return models.filter(item => item.getAttribute('aria-checked') === 'true');
     return [toggle, power, ...models];
   };
-  menu.dispatchEvent = event => { if (event.key === 'Escape') open = false; };
+  menu.dispatchEvent = event => {
+    if (event.key === 'Escape') {
+      open = false;
+      trigger.innerText = badge();
+    }
+  };
   const ctx = {
     location: { href: 'https://chatgpt.com/c/task' },
     sameConversation: url => url === ctx.location.href,
@@ -89,7 +98,6 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
       else if (element === toggle) advanced = true;
       else if (models.includes(element)) {
         selected = element.textContent.split('\n')[0]; advanced = false;
-        trigger.innerText = compact ? effort[0].toUpperCase() + effort.slice(1) : `${selected} ${effort}`;
       }
     },
   };
@@ -125,7 +133,11 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
   assert.equal(f.clicks.length, count, 'idle checks reuse unchanged verified state');
   assert.equal(await f.ctx.ensureModelPreferences(f.preferences, true), true);
-  assert.equal(f.reports.at(-1).changed, false, 'pre-send verification must not select an already checked model');
+  assert.equal(f.ctx.handoffModelReady(f.preferences), true);
+  assert.equal(f.clicks.filter(element => element === f.models[1]).length, 1,
+    'pre-send verification must not select an already checked model');
+  f.trigger.innerText = 'Thinking effort\nHigh';
+  assert.equal(f.ctx.handoffModelReady(f.preferences), false, 'recheck the model at the send boundary even if effort stays High');
   f.preferences.preferredReasoning = 'instant';
   assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
   assert.equal(f.selection().effort, 'instant');
@@ -163,6 +175,17 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(await resetOnClose.ctx.ensureModelPreferences(resetOnClose.preferences, true), false,
     'do not authorize a send if reasoning reverts after closing the picker');
   assert.equal(resetOnClose.reports.at(-1).reason, 'reasoning-unavailable');
+
+  const modelReset = fixture(0, false, 'GPT-5.6 Sol');
+  const closeModel = modelReset.menu.dispatchEvent;
+  modelReset.menu.dispatchEvent = event => {
+    closeModel(event);
+    modelReset.trigger.innerText = 'Thinking effort\nHigh';
+  };
+  assert.equal(await modelReset.ctx.ensureModelPreferences(modelReset.preferences, true), false,
+    'a checked menu row cannot authorize sending when the closed composer reverts to GPT-6 High');
+  assert.equal(modelReset.reports.at(-1).reason, 'model-unconfirmed');
+  assert.equal(modelReset.reports.at(-1).observedModel, 'GPT-6');
 
   const disabled = fixture();
   disabled.preferences.enforceModelPreferences = false;
