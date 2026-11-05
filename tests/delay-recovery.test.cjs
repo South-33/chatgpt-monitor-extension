@@ -30,6 +30,32 @@ async function scenario(stopSucceeds) {
   await sandbox.recoverExtendedThinking();
   return { events, sandbox };
 }
+
+async function sendNow({ stopSucceeds, draft = '' }) {
+  const events = [];
+  let generating = true;
+  const url = 'https://chatgpt.com/c/current';
+  const sandbox = {
+    location: { href: url }, stopped: false, manualActionRunning: false, scanRunning: false,
+    lastPromptFailureReason: 'unknown', hasBlockingUi: () => false,
+    sameConversation: expected => expected === url,
+    findComposer: () => ({}), composerText: () => draft,
+    findStopButton: () => generating ? {} : null,
+    isGenerating: () => generating,
+    HTMLButtonElement: { prototype: { click() { events.push('stop'); generating = !stopSucceeds; } } },
+    waitFor: async predicate => Boolean(predicate()), setTimeout: callback => callback(),
+    async sendPrompt(prompt, requirePlugin, cyclePrompt) {
+      assert.equal(generating, false);
+      assert.equal(cyclePrompt, true);
+      events.push(prompt);
+      return true;
+    },
+    sendRuntime() { assert.fail('a direct send must not report itself as a handoff'); },
+  };
+  vm.runInNewContext(source.slice(source.indexOf('async function manualSwap'), source.indexOf('async function manualContinue')), sandbox);
+  return { ok: await sandbox.manualSwap('Improve', url, true), events };
+}
+
 (async () => {
   const recovered = await scenario(true);
   assert.deepEqual(recovered.events, ['watchdog-stop-requested', 'stop', 'watchdog-stop-confirmed',
@@ -38,5 +64,8 @@ async function scenario(stopSucceeds) {
   assert.equal(failed.events.includes('extendedThinkingStopFailed'), true);
   assert.equal(failed.events.some(event => event.startsWith('send:')), false, 'a failed Stop must never send a follow-up');
   assert.equal(failed.sandbox.extendedThinkingStopFailures, 1);
+  assert.deepEqual(await sendNow({ stopSucceeds: true }), { ok: true, events: ['stop', 'Improve'] });
+  assert.deepEqual(await sendNow({ stopSucceeds: false }), { ok: false, events: ['stop'] });
+  assert.deepEqual(await sendNow({ stopSucceeds: true, draft: 'Unsent draft' }), { ok: false, events: [] });
   console.log('delay_recovery_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

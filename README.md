@@ -10,7 +10,8 @@ Chrome extension that continues a ChatGPT task and carries its checkpoint into a
 **Pause** keeps the timer and lets you resume later. **Handoff** starts a fresh chat with a checkpoint. Review any approval shown by ChatGPT before resuming.
 Drag the top slider to set how much time the current chat has already used toward handoff. You can set it before monitoring starts.
 
-The cycle starts with your prompt and a Continue turn. **Improve** and **Housekeeping** each add their own turn followed by time to finish that step. With both off, the cycle uses two Continue turns.
+The cycle returns to your goal prompt between rounds of enabled **Improve** and **Housekeeping** steps. Each optional step continues until it reports finished or blocked. The original goal uses its own finish and block markers.
+Either arrow stops the current reply and sends its prompt. Monitoring stays as it was.
 
 Model, reasoning, and cycle controls apply to the current tab. Prompt text, plugin, and both timers are shared.
 Hover over the cycle number to see the current stage name.

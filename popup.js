@@ -48,6 +48,7 @@ let logFolderName = "";
 let promptTimer;
 let thresholdTimer;
 let noticeTimer;
+let sendingCyclePrompt = false;
 let saveQueue = Promise.resolve();
 let saveFailed = false;
 let switchingPreset = false;
@@ -150,10 +151,7 @@ function renderStatus(result) {
   }
   const value = result.status || "off";
   for (const button of sendNowButtons) {
-    button.disabled = !monitoring || paused || value !== "ongoing" || !isConversationUrl(activeTab?.url);
-    const queued = result.queuedPrompt === button.dataset.sendNow;
-    button.setAttribute("aria-pressed", String(queued));
-    button.title = queued ? "Queued. Click to cancel." : button.getAttribute("aria-label");
+    button.disabled = sendingCyclePrompt || result.lookupFailed || !isConversationUrl(activeTab?.url);
   }
   progress.disabled = Boolean(result.lookupFailed) || !isConversationUrl(activeTab?.url);
   if (!handoffEdit || handoffEdit.url !== activeTab?.url) {
@@ -414,11 +412,17 @@ async function runAction(type, failure, details = {}) {
 swapButton.addEventListener("click", () => runAction("manualSwap", "Could not start the handoff."));
 retryButton.addEventListener("click", () => runAction("retryNow", "Could not retry."));
 for (const button of sendNowButtons) {
-  button.addEventListener("click", () => {
-    button.disabled = true;
-    void runAction("queueCyclePrompt", "Could not queue prompt.", {
-      kind: button.dataset.sendNow, url: activeTab?.url,
-    });
+  button.addEventListener("click", async () => {
+    sendingCyclePrompt = true;
+    renderStatus(currentStatus);
+    try {
+      await runAction("sendCyclePrompt", "Could not send prompt.", {
+        kind: button.dataset.sendNow, url: activeTab?.url,
+      });
+    } finally {
+      sendingCyclePrompt = false;
+      renderStatus(currentStatus);
+    }
   });
 }
 

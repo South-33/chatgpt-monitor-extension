@@ -59,7 +59,7 @@ const status = (key, text, latestUserText, composerEmpty = true) => ({
   assert.equal(first.action, 'sendTerminalReview');
   assert.equal(local.runtime.states[64].terminalReviewAttempted, true);
   assert.equal(local.runtime.states[64].phase, 'sending-terminal-review');
-  assert.equal(local.runtime.states[64].genericContinuesRemaining, 0,
+  assert.equal(local.runtime.states[64].cycleTask, "",
     'reconsideration must not count against normal continuation cadence');
   assert.match(first.prompt, /exact blocker/i);
   assert.match(first.prompt, /clean and current/i);

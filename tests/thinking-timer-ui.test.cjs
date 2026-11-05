@@ -46,7 +46,7 @@ const controls = Object.fromEntries([
 const statusSandbox = {
   ...controls, threshold: { value: 400 }, activeTab: { url: "https://chatgpt.com/c/test" },
   cycleStage: { setAttribute() {} },
-  sendNowButtons: [],
+  sendNowButtons: [{}, {}], sendingCyclePrompt: false,
   progress: {}, handoffEdit: null,
   renderHandoffProgress() {}, thinkingCountdown: () => "", PHASE_LABELS: {},
   isConversationUrl: () => true, logFolderName: "logs",
@@ -61,6 +61,11 @@ assert.equal(controls.pauseButton.disabled, false, "blocked monitoring must also
 statusSandbox.renderStatus({ ...blocked, isCurrentTab: false });
 assert.equal(controls.pauseButton.disabled, true, "do not pause another tab's monitoring");
 assert.equal(statusSandbox.cycleStage.hidden, true);
+assert.ok(statusSandbox.sendNowButtons.every(button => !button.disabled), "arrows work with monitoring off");
+statusSandbox.sendingCyclePrompt = true;
+statusSandbox.renderStatus(blocked);
+assert.ok(statusSandbox.sendNowButtons.every(button => button.disabled), "both arrows wait for the in-flight send");
+statusSandbox.sendingCyclePrompt = false;
 statusSandbox.renderStatus({ ...blocked, cycleStage: { step: 4, total: 4, label: "Housekeeping" } });
 assert.equal(statusSandbox.cycleStage.textContent, "4/4");
 assert.match(statusSandbox.cycleStage.title, /Housekeeping/);

@@ -51,7 +51,6 @@
       .workflow-toggle input { margin: 0; accent-color: var(--accent); }
       .cycle-options { display: flex; align-items: center; gap: 12px; margin-top: 5px; }
       .send-now { width: 24px; height: 24px; padding: 0; border-radius: 5px; background: var(--surface); color: var(--accent); }
-      .send-now[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
       #cycleStage { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
       .field { display: grid; gap: 2px; min-width: 0; color: var(--muted); font-size: 11px; }
       .field :is(input, select) { width: 100%; min-width: 0; height: 30px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface); font-size: 13px; }
@@ -91,11 +90,11 @@
       <div class="cycle-options">
         <div class="cycle-option">
           <label class="workflow-toggle"><input id="reviewWorkflow" type="checkbox" disabled /> Improve</label>
-          <button class="send-now" type="button" data-send-now="improve" aria-label="Send Improve" title="Send Improve" aria-pressed="false" disabled>↗</button>
+          <button class="send-now" type="button" data-send-now="improve" aria-label="Send Improve now" title="Stop reply and send Improve" disabled>↗</button>
         </div>
         <div class="cycle-option">
           <label class="workflow-toggle"><input id="housekeeping" type="checkbox" disabled /> Housekeeping</label>
-          <button class="send-now" type="button" data-send-now="housekeeping" aria-label="Send Housekeeping" title="Send Housekeeping" aria-pressed="false" disabled>↗</button>
+          <button class="send-now" type="button" data-send-now="housekeeping" aria-label="Send Housekeeping now" title="Stop reply and send Housekeeping" disabled>↗</button>
         </div>
         <span id="cycleStage" role="status" hidden></span>
       </div>
@@ -103,7 +102,7 @@
 
     <div id="notice" role="status"></div>
     <section class="prompt-section">
-      <div class="prompt-top"><label for="continuePrompt">Continue prompt</label><span class="prompt-state" id="promptState" role="status"></span><div class="slots" id="presetSlots" role="group" aria-label="Continue prompt presets">
+      <div class="prompt-top"><label for="continuePrompt">Goal prompt</label><span class="prompt-state" id="promptState" role="status"></span><div class="slots" id="presetSlots" role="group" aria-label="Goal prompt presets">
         <button type="button" data-preset="0" aria-label="Prompt preset 1" disabled>1</button>
         <button type="button" data-preset="1" aria-label="Prompt preset 2" disabled>2</button>
         <button type="button" data-preset="2" aria-label="Prompt preset 3" disabled>3</button>

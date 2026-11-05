@@ -30,6 +30,9 @@ const CONTINUE_TERMINAL_NOTE =
   "If the original task is complete and verified, end with TASK_FINISHED on its own final line. If no authorized progress is possible without user action, end with TASK_BLOCKED on its own final line.";
 
 const AUTOMATION_NOTE =
+  "This is an automated continuation. Use your judgment. Pick up the original goal from its current state and apply the guidance below where it helps.";
+
+const LEGACY_AUTOMATION_NOTE =
   "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
 
 const HOUSEKEEPING_GUIDANCE =
@@ -44,21 +47,18 @@ const FINISHED_REVIEW_PROMPT =
 const BLOCKED_REVIEW_PROMPT =
   `Before accepting TASK_BLOCKED, identify the exact blocker and check for a reasonable, authorized way to make progress.\n\n${HOUSEKEEPING_GUIDANCE}\n\nIf still blocked, say what you need from the user. ${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only blocker review for this stop attempt.`;
 
-const GENERIC_CONTINUE_PROMPT = "Automated message: Continue";
 // Estimated 128k context plus 16k headroom, at 809 tokens per 9.5 seconds.
 const INSTRUCTION_REFRESH_SECONDS = Math.ceil(144000 * 9.5 / 809);
 const GLOBAL_INSTRUCTIONS_HEADER = "\n\nGlobal AGENTS.md (user instructions)\n";
 const GIT_INSTRUCTIONS_HEADER = "\n\nGit guidance from global AGENTS.md\n";
-const FOLLOW_THROUGH_PROMPT = "Automated message: Continue the previous step. If Improve or Housekeeping is still in progress, pick up where you left off and finish the useful work before moving on. If that step is complete, continue toward the original goal.";
 
 function customContinueText(text) {
   const original = String(text || "");
   let cleaned = promptWithoutInstructions(original.trim())
     .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
     .trim();
-  if (cleaned.startsWith(AUTOMATION_NOTE)) {
-    cleaned = cleaned.slice(AUTOMATION_NOTE.length).trim();
-  }
+  const preamble = [AUTOMATION_NOTE, LEGACY_AUTOMATION_NOTE].find(note => cleaned.startsWith(note));
+  if (preamble) cleaned = cleaned.slice(preamble.length).trim();
   if (cleaned.endsWith(GOAL_CONTRACT)) {
     cleaned = cleaned.slice(0, -GOAL_CONTRACT.length).trim();
   }
@@ -68,10 +68,6 @@ function customContinueText(text) {
   return cleaned === original.trim() ? original : cleaned;
 }
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
-
-function isShortContinuePrompt(prompt) {
-  return promptWithoutInstructions(prompt).trim() === GENERIC_CONTINUE_PROMPT;
-}
 
 function promptWithoutInstructions(prompt) {
   return String(prompt || "").split(GLOBAL_INSTRUCTIONS_HEADER)[0].split(GIT_INSTRUCTIONS_HEADER)[0];
@@ -92,28 +88,21 @@ function globalGitGuidance() {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
 }
 
-function continuationPrompt(text, preamble = AUTOMATION_NOTE) {
-  const body = String(text || "").trim();
-  const terminal = /\bTASK_FINISHED\b/.test(body) && /\bTASK_BLOCKED\b/.test(body)
-    ? ""
-    : `\n\n${CONTINUE_TERMINAL_NOTE}`;
-  return `${preamble}\n\n${body || "continue"}${terminal}`;
+function continuationPrompt(text) {
+  return `${AUTOMATION_NOTE}\n\n${text.trim() || "Continue."}\n\n${CONTINUE_TERMINAL_NOTE}`;
 }
 
-const WORKFLOW_REVIEW_PROMPT = continuationPrompt(
-  "Look at the remaining goal and ask what would make the agent materially faster, more reliable, or better informed. Use recent friction as evidence. Improve the tools, scripts, or feedback the agent relies on if that is the highest-value move. Give unconventional ideas a real shot, including building a tool or replacing the current approach if it would work better. Try the idea on real work, judge it by the quality of the result and the effort it takes, then keep working toward the goal.",
-  "This is an automated check-in. Use your own judgment. Improve the agent harness when it will make a meaningful difference to the task. Otherwise, take the most useful next step.",
-);
-
-const HOUSEKEEPING_PROMPT = continuationPrompt(
-  `${HOUSEKEEPING_GUIDANCE} Keep working toward the original goal.\n\n${GIT_GUIDANCE}`,
-  "This is an automated continuation. Use your own judgment about what is worth tidying up while you work.",
-);
-
-const ON_DEMAND_PROMPTS = new Map([
-  ["improve", WORKFLOW_REVIEW_PROMPT],
-  ["housekeeping", HOUSEKEEPING_PROMPT],
+const CYCLE_GUIDANCE = new Map([
+  ["improve", "Improve the agent harness so the remaining work is faster, more reliable, or easier to judge. Look at where recent work lost time, repeated effort, or lacked good evidence. Use your judgment about what would help most with the tools and resources available. Give unconventional approaches a real try when they could pay off, including custom tools or a replacement workflow. Verify the benefit on representative work."],
+  ["housekeeping", `${HOUSEKEEPING_GUIDANCE} Make the work easier to find, understand, and maintain with less code, fewer tests, or fewer docs where they duplicate what is already covered.\n\n${GIT_GUIDANCE}`],
 ]);
+
+function cycleTaskPrompt(task) {
+  const guidance = CYCLE_GUIDANCE.get(task);
+  if (!guidance) return "";
+  const marker = task.toUpperCase();
+  return `This is an automated continuation. Use your judgment and pick up this step from where it stands.\n\n${guidance}\n\nWhen the useful work for this step is done and verified, or there is nothing worth changing, end with ${marker}_FINISHED on its own final line. If a blocker prevents further useful progress on this step, explain it and end with ${marker}_BLOCKED on its own final line. Otherwise keep working on this step and use neither marker. The original goal resumes separately.`;
+}
 
 function sameSubmittedPrompt(actual, expected) {
   const normalize = (text) => String(text || "").trim().replace(/\s+/g, " ");
@@ -147,6 +136,7 @@ const lastDiagnosticHeartbeatAt = new Map();
 const lastRecoveryAttemptAt = new Map();
 const pendingHandoffs = new Map();
 const manualSwapsInFlight = new Set();
+const cyclePromptsInFlight = new Set();
 const MAX_DIAGNOSTIC_EVENTS = 500;
 const DIAGNOSTIC_EVENTS = new Set([
   "approval_detected", "approval_resolved", "approval_pending",
@@ -163,6 +153,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "action-result",
   "prompt-submission-failed",
   "recovery-check-completed",
+  "cycle-step-ended",
   "response-recovery",
   "logging-configured",
   "handoff-incomplete",
@@ -170,7 +161,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "handoff-delivered",
   "heartbeat",
 ]);
-const DIAGNOSTIC_PROMPT_MODES = new Set(["short-continue", "follow-through", "recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
+const DIAGNOSTIC_PROMPT_MODES = new Set(["recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
 const CONTENT_DIAGNOSTIC_REASONS = new Set([
   "timer-started", "notice-or-generation-ended", "notice-disappeared", "generation-ended", "monitor-reset",
   "configured-limit", "ten-minute-limit",
@@ -190,10 +181,9 @@ function promptKind(action, prompt) {
   if (action === "sendTerminalReview") return "terminal-review";
   if (action === "sendContinue" && prompt === RECOVERY_CHECK_PROMPT) return "recovery-check";
   if (action === "sendContinue") {
-    if (prompt === WORKFLOW_REVIEW_PROMPT) return "workflow-review";
-    if (prompt === HOUSEKEEPING_PROMPT) return "housekeeping";
-    if (prompt === FOLLOW_THROUGH_PROMPT) return "follow-through";
-    return isShortContinuePrompt(prompt) ? "short-continue" : "custom-continue";
+    if (prompt === cycleTaskPrompt("improve")) return "workflow-review";
+    if (prompt === cycleTaskPrompt("housekeeping")) return "housekeeping";
+    return "custom-continue";
   }
   if (action === "sendHandoff") return "handoff";
   return "none";
@@ -245,7 +235,8 @@ function recordDiagnostic(event, details = {}) {
   }
   if (Number.isInteger(details.tabId)) {
     entry.tabId = details.tabId;
-    const stage = states.get(details.tabId)?.cycleStage;
+    const state = states.get(details.tabId);
+    const stage = state && cycleStage(details.tabId, state.cycleTask);
     if (stage && (event === "action-requested" || event === "action-result" || event === "heartbeat")) {
       entry.cycleStep = stage.step;
       entry.cycleTotal = stage.total;
@@ -345,15 +336,16 @@ async function initialize() {
       state.terminalReviewKind = "blocked";
     }
     delete state.blockedReviewAttempted;
-    const followUps = followUpPrompts(controlsForTab(id));
-    if (state.cycleStage?.total < followUps.length + 1 && state.lastCustomContinue) {
-      const { label, step } = state.cycleStage;
-      const migratedStep = label === "Housekeeping" && followUps.includes(HOUSEKEEPING_PROMPT)
-        ? followUps.indexOf(HOUSEKEEPING_PROMPT) + 2 : step;
-      const completed = migratedStep - 1 - Number(Boolean(state.pendingNormalContinue && step > 1));
-      state.genericContinuesRemaining = followUps.length - completed;
-      state.cycleStage = { ...state.cycleStage, step: migratedStep, total: followUps.length + 1 };
+    if (!state.cycleTask && state.cycleStage?.label === "Improve harness") state.cycleTask = "improve";
+    if (!state.cycleTask && state.cycleStage?.label === "Housekeeping") state.cycleTask = "housekeeping";
+    if (!state.cycleTask && state.cycleStage?.label === "Follow-through") {
+      state.cycleTask = state.cycleStage.step === 4 && controlsForTab(id).reviewWorkflow ? "improve" : "housekeeping";
     }
+    delete state.cycleStage;
+    delete state.lastCustomContinue;
+    delete state.genericContinuesRemaining;
+    delete state.pendingNormalContinue;
+    delete state.queuedPrompt;
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -436,9 +428,7 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
     phase: "watching",
     taskStatus: "ongoing",
     resumeContinuePending: false,
-    lastCustomContinue: "",
-    genericContinuesRemaining: 0,
-    pendingNormalContinue: null,
+    cycleTask: "",
     maxWorkedSeconds: 0,
     historyWorkedSeconds: 0,
     trackedSeconds: 0,
@@ -511,13 +501,14 @@ function getState(tabId, url) {
   return state;
 }
 
-function terminalStatus(text) {
+function terminalStatus(text, task = "goal") {
   const finalLine = (text || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .at(-1) || "";
-  const match = finalLine.match(/^(?:TASK|GOAL)[\s_:-]*(FINISHED|BLOCKED)[.!]?$/i);
+  const marker = task === "goal" ? "TASK|GOAL" : task.toUpperCase();
+  const match = finalLine.match(new RegExp(`^(?:${marker})[\\s_:-]*(FINISHED|BLOCKED)[.!]?$`, "i"));
   return match ? match[1].toLowerCase() : null;
 }
 
@@ -525,8 +516,10 @@ function addGoalContract(prompt) {
   return `${prompt.trim()}\n\n${GOAL_CONTRACT}`;
 }
 
-function relayPrompt(handoff) {
-  return addGoalContract(`${HANDOFF_RELAY}\n\n${handoff}`);
+function relayPrompt(handoff, task) {
+  const relay = `${HANDOFF_RELAY}\n\n${handoff}`;
+  const activeStep = cycleTaskPrompt(task);
+  return activeStep ? `${relay}\n\nResume the current step first.\n\n${activeStep}` : addGoalContract(relay);
 }
 
 
@@ -574,7 +567,6 @@ function nextAction(state, phase, name, prompt) {
 }
 
 function requestHandoff(state, prompt = handoffPrompt(), source = "automatic") {
-  state.pendingNormalContinue = null;
   if (!handoffInProgress(state) && source !== "incomplete-handoff") {
     state.handoffShortRetryUsed = false;
   }
@@ -613,40 +605,25 @@ function controlsForTab(tabId) {
   return settings.tabControls?.[tabId] || settings;
 }
 
-function followUpPrompts({ reviewWorkflow, housekeeping }) {
-  const prompts = [GENERIC_CONTINUE_PROMPT];
-  if (reviewWorkflow) prompts.push(WORKFLOW_REVIEW_PROMPT, FOLLOW_THROUGH_PROMPT);
-  if (housekeeping) prompts.push(HOUSEKEEPING_PROMPT, FOLLOW_THROUGH_PROMPT);
-  if (prompts.length === 1) prompts.push(GENERIC_CONTINUE_PROMPT);
-  return prompts;
+function cycleTasks(tabId, active) {
+  const { reviewWorkflow, housekeeping } = controlsForTab(tabId);
+  const tasks = ["goal"];
+  if (reviewWorkflow || active === "improve") tasks.push("improve");
+  if (housekeeping || active === "housekeeping") tasks.push("housekeeping");
+  return tasks;
 }
 
-function cycleStage(step, followUps, prompt) {
-  const label = step === 1 ? "Custom"
-    : prompt === WORKFLOW_REVIEW_PROMPT ? "Improve harness"
-    : prompt === FOLLOW_THROUGH_PROMPT ? "Follow-through"
-    : prompt === HOUSEKEEPING_PROMPT ? "Housekeeping" : "Continue";
-  return { step, total: followUps.length + 1, label };
-}
-
-function continueRepairFollowUps(state) {
-  if (!state?.lastCustomContinue || state.pendingNormalContinue
-      || (state.cycleStage && state.cycleStage.label !== "Continue")) return null;
-  const followUps = followUpPrompts(controlsForTab(state.tabId));
-  return followUps[1] !== GENERIC_CONTINUE_PROMPT && state.genericContinuesRemaining < followUps.length - 1
-    ? followUps : null;
+function cycleStage(tabId, task) {
+  const tasks = cycleTasks(tabId, task);
+  const labels = { goal: "Goal", improve: "Improve", housekeeping: "Housekeeping" };
+  return { step: tasks.indexOf(task || "goal") + 1, total: tasks.length, label: labels[task || "goal"] };
 }
 
 function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
-    const followUps = followUpPrompts(controlsForTab(state.tabId));
-    const remaining = Math.min(followUps.length, state.genericContinuesRemaining);
-    const custom = customContinueText(continuePromptForTab(state.tabId));
-    const useCustom = custom !== state.lastCustomContinue || !(remaining > 0);
-    const index = followUps.length - remaining;
-    state.pendingNormalContinue = { custom, useCustom };
-    prompt = useCustom ? continuationPrompt(custom) : followUps[index];
-    state.cycleStage = cycleStage(useCustom ? 1 : index + 2, followUps, prompt);
+    state.cycleTask ||= "goal";
+    prompt = cycleTaskPrompt(state.cycleTask)
+      || continuationPrompt(customContinueText(continuePromptForTab(state.tabId)));
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
@@ -662,14 +639,12 @@ function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kin
   state.terminalReviewAttempted = true;
   state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
   state.terminalReviewIdleSince = null;
-  state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = "";
   state.nextActionSource = source;
   return nextAction(state, "sending-terminal-review", "sendTerminalReview", prompt);
 }
 
 function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
-  state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = RECOVERY_CHECK_PROMPT;
   return requestContinue(state, RECOVERY_CHECK_PROMPT, source);
 }
@@ -690,18 +665,6 @@ function markTransientActionAccepted(state) {
   if (state.pendingInstructionRefreshAt != null) {
     state.instructionRefreshAt = state.pendingInstructionRefreshAt;
     state.pendingInstructionRefreshAt = null;
-  }
-  if (state.phase === "sending-continue" && state.pendingNormalContinue) {
-    const { custom, useCustom } = state.pendingNormalContinue;
-    const followUps = followUpPrompts(controlsForTab(state.tabId)).length;
-    if (useCustom) {
-      state.lastCustomContinue = custom;
-      state.genericContinuesRemaining = followUps;
-    } else {
-      const remaining = Math.min(followUps, state.genericContinuesRemaining);
-      state.genericContinuesRemaining = Math.max(0, remaining - 1);
-    }
-    state.pendingNormalContinue = null;
   }
   if (state.phase === "sending-handoff") state.phase = "waiting-for-handoff";
   if (state.phase === "sending-terminal-review") state.phase = "waiting-for-terminal-review";
@@ -744,7 +707,7 @@ function targetMatches(tabId) {
 }
 
 async function injectTargetTab(tabId) {
-  if (!targetMatches(tabId)) return false;
+  if (!targetMatches(tabId) && !cyclePromptsInFlight.has(tabId)) return false;
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -882,25 +845,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
       if (tabId !== undefined) settings.tabControls[tabId] = controls;
-      const oldFollowUps = followUpPrompts(previous);
-      const oldCount = oldFollowUps.length;
-      const newCount = followUpPrompts(controls).length;
       const modelChanged = previous.preferredModel !== controls.preferredModel
         || previous.preferredReasoning !== controls.preferredReasoning
         || previous.enforceModelPreferences !== controls.enforceModelPreferences;
-      if (modelChanged || oldCount !== newCount) {
+      if (modelChanged) {
         for (const state of states.values()) {
           if (tabId !== undefined && state.tabId !== tabId) continue;
           if (tabId === undefined && settings.tabControls?.[state.tabId]) continue;
-          if (oldCount !== newCount && state.lastCustomContinue) {
-            const completed = Math.max(0, oldCount - state.genericContinuesRemaining);
-            state.cycleStage ??= cycleStage(completed + 1, oldFollowUps, oldFollowUps[completed - 1]);
-            state.genericContinuesRemaining = Math.max(0, newCount - completed);
-          }
-          if (modelChanged) {
-            if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
-            state.modelPreferenceIssue = "";
-          }
+          if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
+          state.modelPreferenceIssue = "";
         }
         await persistRuntime();
       }
@@ -1040,10 +993,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastRecoveryAttemptAt.set(tabId, Date.now());
         await injectTargetTab(tabId);
       }
-      const followUps = followUpPrompts(controlsForTab(tabId));
-      const completed = state?.lastCustomContinue
-        ? Math.max(0, followUps.length - state.genericContinuesRemaining) : 0;
-      const stage = state?.cycleStage || cycleStage(completed + 1, followUps, followUps[completed - 1]);
       sendResponse({
         enabled: settings.enabled,
         monitoredCount: settings.targetTabIds.length,
@@ -1051,8 +1000,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         currentTabSupported: isChatUrl(message.url),
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
         phase: isCurrentTab ? state?.phase || "watching" : "off",
-        cycleStage: isCurrentTab ? { ...stage, total: Math.max(stage.step, followUps.length + 1) } : null,
-        queuedPrompt: state?.queuedPrompt || "",
+        cycleStage: isCurrentTab ? cycleStage(tabId, state?.cycleTask) : null,
         isGenerating: Boolean(isCurrentTab && state?.activeStartedAt),
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
         extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,
@@ -1103,18 +1051,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message.type === "queueCyclePrompt") {
+    if (message.type === "sendCyclePrompt") {
       const tabId = Number(message.tabId);
-      const state = targetMatches(tabId) ? states.get(tabId) : null;
-      if (!state || state.paused || state.taskStatus !== "ongoing"
-          || !isConversationUrl(message.url) || conversationKey(message.url) !== state.conversationKey
-          || !ON_DEMAND_PROMPTS.has(message.kind)) {
-        sendResponse({ ok: false, error: "Open a monitored chat and resume it first." });
+      const basePrompt = cycleTaskPrompt(message.kind);
+      if (!basePrompt || !Number.isInteger(tabId) || !isConversationUrl(message.url)) {
+        sendResponse({ ok: false, error: "Open a ChatGPT conversation first." });
         return;
       }
-      state.queuedPrompt = state.queuedPrompt === message.kind ? "" : message.kind;
-      await persistRuntime();
-      sendResponse({ ok: true });
+      if (cyclePromptsInFlight.has(tabId) || manualSwapsInFlight.has(tabId) || pendingHandoffs.has(tabId)) {
+        sendResponse({ ok: false, error: "Another prompt or handoff is already in progress." });
+        return;
+      }
+      cyclePromptsInFlight.add(tabId);
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const key = conversationKey(message.url);
+        if (conversationKey(tab.url) !== key) {
+          sendResponse({ ok: false, error: "The conversation changed. Open the popup and try again." });
+          return;
+        }
+        if (!targetMatches(tabId)) await injectTargetTab(tabId);
+        const git = message.kind === "housekeeping" ? globalGitGuidance() : "";
+        const prompt = git ? basePrompt + GIT_INSTRUCTIONS_HEADER + git : basePrompt;
+        const result = await chrome.tabs.sendMessage(tabId, {
+          type: "sendCyclePrompt", prompt, expectedUrl: message.url,
+        });
+        const state = targetMatches(tabId) ? states.get(tabId) : null;
+        if (result?.ok && state?.conversationKey === key && state.taskStatus === "ongoing") {
+          state.phase = "sending-continue";
+          state.cycleTask = message.kind;
+          state.pendingInstructionRefreshAt = null;
+          state.actionSource = "";
+          state.actionPromptMode = "none";
+          state.recoveryCheckPrompt = "";
+          state.terminalReviewPrompt = "";
+          state.terminalReviewKind = "";
+          state.terminalReviewIdleSince = null;
+          state.terminalReviewAttempted = false;
+          state.resumeContinuePending = false;
+          markTransientActionAccepted(state);
+          if (state.paused) {
+            state.resumePhase = state.phase;
+            state.phase = "paused";
+          }
+          await persistRuntime();
+        }
+        await recordDiagnostic("action-result", {
+          tabId, source: "manual-continue", action: "sendContinue",
+          promptMode: promptKind("sendContinue", basePrompt), success: result?.ok === true,
+          reason: result?.reason,
+        });
+        const errors = {
+          "stop-control-remained-visible": "ChatGPT did not stop. Try again when it is idle.",
+          "composer-has-draft": "Clear or send the draft in ChatGPT first.",
+          "model-preference": "Could not verify the model. Check the model settings.",
+          "send-not-confirmed": "Check ChatGPT to see whether the prompt was sent.",
+        };
+        sendResponse(result?.ok ? { ok: true } : {
+          ok: false, error: errors[result?.reason] || "Could not send. Check the ChatGPT tab and try again.",
+        });
+      } catch {
+        sendResponse({ ok: false, error: "Could not reach the ChatGPT tab. Refresh it and try again." });
+      } finally {
+        cyclePromptsInFlight.delete(tabId);
+      }
       return;
     }
 
@@ -1152,7 +1152,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "manualSwap") {
       const tabId = Number(message.tabId);
-      if (manualSwapsInFlight.has(tabId)) {
+      if (manualSwapsInFlight.has(tabId) || cyclePromptsInFlight.has(tabId)) {
         sendResponse({ ok: false, error: "Handoff is already starting." });
         return;
       }
@@ -1235,6 +1235,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "manualContinue") {
       const tabId = Number(message.tabId);
+      if (cyclePromptsInFlight.has(tabId)) {
+        sendResponse({ ok: false, error: "Another prompt is already in progress." });
+        return;
+      }
       if (!targetMatches(tabId)) {
         sendResponse({ ok: false, error: "No task is being monitored." });
         return;
@@ -1332,9 +1336,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const state = target ? states.get(tabId) : null;
       const controls = controlsForTab(tabId);
-      sendResponse({ target: targetMatches(tabId), paused: Boolean(state?.paused),
+      const cyclePromptPending = cyclePromptsInFlight.has(tabId);
+      sendResponse({ target: message.cyclePrompt ? cyclePromptPending : target,
+        paused: !message.cyclePrompt && Boolean(state?.paused || cyclePromptPending), cyclePromptPending,
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
-        checkContinueStage: Boolean(continueRepairFollowUps(state)),
         waitingForTerminalReview: state?.phase === "waiting-for-terminal-review",
         thinkingMinutes: settings.thinkingMinutes,
         enforceModelPreferences: controls.enforceModelPreferences !== false,
@@ -1373,7 +1378,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         prompt: targetMatches(tabId) && !states.get(tabId)?.paused && handoff
           && (!handoff.deliveryFailed || (handoff.retryAt && Date.now() >= handoff.retryAt))
-          ? relayPrompt(handoff.text) + (handoff.instructions || "")
+          ? relayPrompt(handoff.text, states.get(tabId)?.cycleTask) + (handoff.instructions || "")
           : null,
       });
       return;
@@ -1394,7 +1399,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await recordDiagnostic("monitoring-changed", { tabId, reason: "stopped" });
           syncKeepAwake();
         } else {
-          const freshState = newState(sender.tab?.url || message.url || "", states.get(tabId), tabId);
+          const previous = states.get(tabId);
+          const freshState = newState(sender.tab?.url || message.url || "", previous, tabId);
+          freshState.cycleTask = CYCLE_GUIDANCE.has(previous?.cycleTask) ? previous.cycleTask : "";
           freshState.awaitingFreshConversation = !freshState.conversationKey.includes("/c/");
           states.set(tabId, freshState);
           await persistRuntime();
@@ -1406,6 +1413,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "handoffCaptured") {
+      if (cyclePromptsInFlight.has(tabId)) { sendResponse({ ok: false }); return; }
       if (targetMatches(tabId) && validHandoffText(message.text)) {
         const state = getState(tabId, message.url || sender.tab?.url || "");
         pendingHandoffs.set(tabId, {
@@ -1583,7 +1591,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message.type !== "status" || !targetMatches(tabId)) {
+    if (message.type !== "status" || !targetMatches(tabId) || cyclePromptsInFlight.has(tabId)) {
       sendResponse({});
       return;
     }
@@ -1613,15 +1621,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         Number(state.maxWorkedSeconds) || 0,
         Number(message.workedSeconds) || 0,
       );
-    }
-
-    // A cycle saved under an older configuration can count a second plain
-    // Continue as step 3. In a cycle with one plain Continue, it is step 2.
-    const repairFollowUps = isShortContinuePrompt(message.latestUserText) && continueRepairFollowUps(state);
-    if (repairFollowUps) {
-      state.genericContinuesRemaining = repairFollowUps.length - 1;
-      state.cycleStage = cycleStage(2, repairFollowUps, GENERIC_CONTINUE_PROMPT);
-      await persistRuntime();
     }
 
     if (message.isGenerating) {
@@ -1706,8 +1705,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    const sideTask = CYCLE_GUIDANCE.has(state.cycleTask);
     if (state.retryAt && (state.phase === "sending-terminal-review"
-        || !terminalStatus(message.latestResponseText))) {
+        || sideTask || !terminalStatus(message.latestResponseText))) {
       // A missing acknowledgement is reconciled before another click.
       if (sameSubmittedPrompt(message.latestUserText, state.actionPrompt) && message.composerEmpty) {
         markTransientActionAccepted(state);
@@ -1822,7 +1822,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({});
       return;
     }
-    const terminal = isNewResponse ? terminalStatus(message.latestResponseText) : null;
+    const terminal = isNewResponse && !sideTask ? terminalStatus(message.latestResponseText) : null;
     if (terminal) {
       if (!state.terminalReviewAttempted) {
         // An unsubmitted user draft must never be overwritten by automation.
@@ -1846,28 +1846,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.actionPrompt = "";
       state.terminalReviewKind = "";
       state.terminalReviewPrompt = "";
-      state.queuedPrompt = "";
       state.issue = "";
       await recordDiagnostic("pause-changed", { tabId, reason: terminal, phase: "paused" });
       await persistRuntime();
       sendResponse({});
-      return;
-    }
-
-    const queuedPrompt = ON_DEMAND_PROMPTS.get(state.queuedPrompt);
-    if (queuedPrompt && (!state.recoveryCheckPrompt || (isNewResponse && message.latestResponseText))
-        && ["watching", "working", "waiting-for-response", "threshold-waiting"].includes(state.phase)) {
-      if (message.composerEmpty !== true) { sendResponse({}); return; }
-      if (state.recoveryCheckPrompt) {
-        void recordDiagnostic("recovery-check-completed", { tabId });
-        state.recoveryCheckPrompt = "";
-      }
-      state.queuedPrompt = "";
-      state.pendingNormalContinue = null;
-      if (message.responseKey) state.lastResponseKey = message.responseKey;
-      const action = requestContinue(state, queuedPrompt, "manual-continue");
-      await persistRuntime();
-      sendResponse(action);
       return;
     }
 
@@ -1917,7 +1899,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({});
       return;
     }
-    if (state.recoveryCheckPrompt) {
+    const wasRecoveryCheck = Boolean(state.recoveryCheckPrompt);
+    if (wasRecoveryCheck) {
       void recordDiagnostic("recovery-check-completed", { tabId });
       state.recoveryCheckPrompt = "";
     }
@@ -1936,6 +1919,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (state.cycleTask && !wasRecoveryCheck && message.latestResponseIsSubstantive !== false) {
+      const outcome = sideTask ? terminalStatus(message.latestResponseText, state.cycleTask) : null;
+      if (!sideTask || outcome) {
+        if (outcome) void recordDiagnostic("cycle-step-ended", {
+          tabId, promptMode: promptKind("sendContinue", cycleTaskPrompt(state.cycleTask)), observedTerminal: outcome,
+        });
+        const tasks = cycleTasks(tabId, state.cycleTask);
+        state.cycleTask = tasks[(tasks.indexOf(state.cycleTask) + 1) % tasks.length];
+      }
+    }
     const result = requestAutomaticFollowUp(state);
     await persistRuntime();
     sendResponse(result);

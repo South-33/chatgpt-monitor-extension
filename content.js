@@ -774,10 +774,6 @@ function consecutiveBlockedResponses() {
   return count;
 }
 
-function latestAssistantText() {
-  return latestAssistantResponse().text;
-}
-
 function fingerprint(text) {
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -1101,7 +1097,7 @@ function sendButtonReady(button) {
   return Boolean(button && visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true");
 }
 
-async function submitComposer(composer, expectedUrl = location.href, requirePlugin = false) {
+async function submitComposer(composer, expectedUrl = location.href, requirePlugin = false, cyclePrompt = false) {
   const draft = composerText(composer);
   const requested = comparableText(draft);
   const submitted = () => isGenerating() || (
@@ -1117,7 +1113,7 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     lastPromptFailureReason = 'composer-changed';
     return false;
   }
-  const ownership = await sendRuntime({ type: "isTargetTab" });
+  const ownership = await sendRuntime({ type: "isTargetTab", cyclePrompt });
   if (stopped || !ownership?.target || ownership.paused || isGenerating() || hasBlockingUi()
       || !sameConversation(expectedUrl) || findComposer() !== composer) {
     lastPromptFailureReason = 'send-conditions-changed';
@@ -1213,7 +1209,7 @@ function selectedReasoning(trigger, menu) {
   return explicit || '';
 }
 
-async function ensureModelPreferences(preferences, force = false) {
+async function ensureModelPreferences(preferences, force = false, cyclePrompt = false) {
   if (preferences.enforceModelPreferences === false) {
     // Switching the checkbox back on must re-verify what happened meanwhile.
     verifiedModelSelection = null;
@@ -1235,7 +1231,7 @@ async function ensureModelPreferences(preferences, force = false) {
   // Check ownership again before every click. A pause, approval, or new response
   // can appear while a menu is opening; none should be interrupted by this flow.
   const canAct = async () => {
-    const current = await sendRuntime({ type: 'isTargetTab' });
+    const current = await sendRuntime({ type: 'isTargetTab', cyclePrompt });
     return !stopped && sameConversation(expectedUrl) && current?.target && !current.paused && current.enforceModelPreferences !== false
       && !isGenerating() && !hasBlockingUi()
       && (current.preferredModel || '') === model && (current.preferredReasoning || '') === reasoning;
@@ -1350,10 +1346,10 @@ async function ensureModelPreferences(preferences, force = false) {
   return success;
 }
 
-async function sendPrompt(text, requirePlugin = false) {
+async function sendPrompt(text, requirePlugin = false, cyclePrompt = false) {
   lastPromptFailureReason = 'unknown';
   const expectedUrl = location.href;
-  const ownership = await sendRuntime({ type: "isTargetTab" });
+  const ownership = await sendRuntime({ type: "isTargetTab", cyclePrompt });
   if (stopped || !ownership?.target || ownership.paused || !sameConversation(expectedUrl)) {
     lastPromptFailureReason = 'monitor-not-ready';
     return false;
@@ -1371,7 +1367,7 @@ async function sendPrompt(text, requirePlugin = false) {
     lastPromptFailureReason = 'composer-blocked';
     return false;
   }
-  if (!requirePlugin && !await ensureModelPreferences(ownership)) {
+  if (!requirePlugin && !await ensureModelPreferences(ownership, false, cyclePrompt)) {
     lastPromptFailureReason = 'model-preference';
     return false;
   }
@@ -1399,27 +1395,34 @@ async function sendPrompt(text, requirePlugin = false) {
     lastPromptFailureReason = 'composer-text-mismatch';
     return false;
   }
-  return submitComposer(composer, expectedUrl, requirePlugin);
+  return submitComposer(composer, expectedUrl, requirePlugin, cyclePrompt);
 }
 
-async function manualSwap(prompt, expectedUrl = location.href) {
+async function manualSwap(prompt, expectedUrl = location.href, cyclePrompt = false) {
   if (manualActionRunning || !prompt || hasBlockingUi() || !sameConversation(expectedUrl)) return false;
   manualActionRunning = true;
   let ok = false;
   try {
     if (!await waitFor(() => !scanRunning, 10000)) return false;
-    if (!sameConversation(expectedUrl)) return false;
+    if (stopped || !sameConversation(expectedUrl) || hasBlockingUi()) return false;
+    if (cyclePrompt && composerText(findComposer())) {
+      lastPromptFailureReason = "composer-has-draft";
+      return false;
+    }
     const stopButton = findStopButton();
     if (stopButton) {
       HTMLButtonElement.prototype.click.call(stopButton);
-      if (!await waitFor(() => !isGenerating(), 15000)) return false;
+      if (!await waitFor(() => !isGenerating(), 15000)) {
+        lastPromptFailureReason = "stop-control-remained-visible";
+        return false;
+      }
       await new Promise((resolve) => setTimeout(resolve, 600));
     }
     if (!sameConversation(expectedUrl)) return false;
-    ok = await sendPrompt(prompt);
+    ok = await sendPrompt(prompt, false, cyclePrompt);
     return ok;
   } finally {
-    await sendRuntime({
+    if (!cyclePrompt) await sendRuntime({
       type: "commandResult",
       action: "sendHandoff",
       ok,
@@ -1635,7 +1638,7 @@ async function scan() {
     extendedThinkingLimitMs = Math.min(60, Math.max(1, Number(tabRole.thinkingMinutes) || 10)) * 60 * 1000;
     if (tabRole.pluginName) configuredPluginName = String(tabRole.pluginName).trim() || "DevSpace";
     if (!tabRole.target) {
-      stopMonitor();
+      if (!tabRole.cyclePromptPending) stopMonitor();
       return;
     }
 
@@ -1751,9 +1754,8 @@ async function scan() {
       recoveryReason,
       latestResponseText,
       latestResponseIsSubstantive,
-      latestUserText: !generating || tabRole.checkContinueStage ? latestUserText() : "",
+      latestUserText: generating ? "" : latestUserText(),
       composerEmpty: generating ? false : !composerText(findComposer()),
-      terminalStatus: terminalMarker(latestResponseText),
       consecutiveBlockedResponses: generating ? 0 : consecutiveBlockedResponses(),
     });
     if (await resolveMaterializationPermission()) return;
@@ -1808,10 +1810,12 @@ function handleVisibilityChange() {
 }
 
 function handleRuntimeMessage(message, _sender, sendResponse) {
-  if (message.type !== "manualSwap" && message.type !== "manualContinue") return false;
-  const operation = message.type === "manualSwap" ? manualSwap : manualContinue;
-  operation(message.prompt, message.expectedUrl)
-    .then((ok) => sendResponse({ ok }))
+  const cyclePrompt = message.type === "sendCyclePrompt";
+  if (!cyclePrompt && message.type !== "manualSwap" && message.type !== "manualContinue") return false;
+  const operation = message.type === "manualContinue" ? manualContinue : manualSwap;
+  if (cyclePrompt) lastPromptFailureReason = "unknown";
+  operation(message.prompt, message.expectedUrl, cyclePrompt)
+    .then((ok) => sendResponse({ ok, reason: ok || !cyclePrompt ? undefined : lastPromptFailureReason }))
     .catch(() => sendResponse({ ok: false }));
   return true;
 }
