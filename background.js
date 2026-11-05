@@ -344,6 +344,7 @@ async function initialize() {
     delete state.genericContinuesRemaining;
     delete state.pendingNormalContinue;
     delete state.queuedPrompt;
+    delete state.lastReview;
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -428,7 +429,6 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
     resumeContinuePending: false,
     cycleTask: "",
     goalTurns: 0,
-    lastReview: "",
     maxWorkedSeconds: 0,
     historyWorkedSeconds: 0,
     trackedSeconds: 0,
@@ -1427,7 +1427,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const freshState = newState(sender.tab?.url || message.url || "", previous, tabId);
           freshState.cycleTask = previous?.cycleTask || "goal";
           freshState.goalTurns = previous?.goalTurns || 0;
-          freshState.lastReview = previous?.lastReview || "";
           freshState.awaitingFreshConversation = !freshState.conversationKey.includes("/c/");
           states.set(tabId, freshState);
           await persistRuntime();
@@ -1969,14 +1968,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         void recordDiagnostic("cycle-step-ended", {
           tabId, contract: state.cycleTask, observedTerminal: outcome,
         });
-        state.lastReview = state.cycleTask;
         state.goalTurns = 0;
-        state.cycleTask = "goal";
+        const tasks = cycleTasks(tabId, state.cycleTask);
+        state.cycleTask = tasks[tasks.indexOf(state.cycleTask) + 1] || "goal";
       } else if (!sideTask) {
-        state.goalTurns = Math.min(GOAL_TURNS_PER_ROUND, (state.goalTurns || 0) + 1);
-        const reviews = cycleTasks(tabId).slice(1);
-        if (state.goalTurns === GOAL_TURNS_PER_ROUND && reviews.length) {
-          state.cycleTask = reviews[(reviews.indexOf(state.lastReview) + 1) % reviews.length];
+        state.goalTurns = (state.goalTurns || 0) + 1;
+        if (state.goalTurns >= GOAL_TURNS_PER_ROUND) {
+          state.goalTurns = 0;
+          state.cycleTask = cycleTasks(tabId)[1] || "goal";
         }
       }
     }

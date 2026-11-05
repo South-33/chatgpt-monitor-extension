@@ -99,12 +99,12 @@ function worker() {
     [3, 2, 'Improve', 'Goal in progress.', /Improve the agent harness/],
     [4, 2, 'Improve', 'IMPROVE_FINISHED was mentioned.\nStill testing.', /IMPROVE_FINISHED/],
     [5, 2, 'Improve', 'TASK_BLOCKED', /IMPROVE_BLOCKED/],
-    [6, 1, 'Goal', 'Verified the new harness.\nIMPROVE_FINISHED', /Goal contract/],
-    [7, 1, 'Goal', 'Goal in progress.', /Goal contract/],
-    [8, 1, 'Goal', 'Goal in progress.', /Goal contract/],
-    [9, 3, 'Housekeeping', 'Goal in progress.', /HOUSEKEEPING_FINISHED/],
-    [10, 3, 'Housekeeping', 'HOUSEKEEPING_FINISHED\nStill consolidating.', /HOUSEKEEPING_BLOCKED/],
-    [11, 1, 'Goal', 'Need access to the archive.\nHOUSEKEEPING_BLOCKED', /Work on task 4 only\./],
+    [6, 3, 'Housekeeping', 'Verified the new harness.\nIMPROVE_FINISHED', /HOUSEKEEPING_FINISHED/],
+    [7, 3, 'Housekeeping', 'HOUSEKEEPING_FINISHED\nStill consolidating.', /HOUSEKEEPING_BLOCKED/],
+    [8, 1, 'Goal', 'Need access to the archive.\nHOUSEKEEPING_BLOCKED', /Work on task 4 only\./],
+    [9, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [10, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [11, 2, 'Improve', 'Goal in progress.', /Improve contract/],
   ]) {
     if (index === 2) harness = worker();
     if (index === 5) {
