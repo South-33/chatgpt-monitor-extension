@@ -2,6 +2,9 @@ const chooseFolder = document.querySelector('#chooseFolder');
 const reconnectFolder = document.querySelector('#reconnectFolder');
 const downloadLogs = document.querySelector('#downloadLogs');
 const status = document.querySelector('#status');
+const agentInstructions = document.querySelector('#agentInstructions');
+const clearAgentInstructions = document.querySelector('#clearAgentInstructions');
+const agentInstructionsStatus = document.querySelector('#agentInstructionsStatus');
 
 let savedFolder = null;
 
@@ -118,3 +121,32 @@ downloadLogs.addEventListener('click', async () => {
 void showCurrentFolder().catch((error) => {
   status.textContent = `Could not read log storage: ${explain(error)}`;
 });
+
+async function updateAgentInstructions(message) {
+  try {
+    const result = await chrome.runtime.sendMessage(message);
+    if (!result?.ok) throw new Error(result?.error || 'Could not access global instructions.');
+    clearAgentInstructions.hidden = !result.configured;
+    agentInstructionsStatus.textContent = result.configured
+      ? result.hasGit ? 'Imported. Git section found.' : 'Imported. Using default Git guidance.'
+      : 'No file imported.';
+  } catch (error) {
+    agentInstructionsStatus.textContent = error.message;
+  }
+}
+
+agentInstructions.addEventListener('change', async () => {
+  const file = agentInstructions.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 128000) throw new Error('Choose an AGENTS.md file under 32,000 characters.');
+    await updateAgentInstructions({ type: 'saveAgentInstructions', text: await file.text() });
+  } catch (error) {
+    agentInstructionsStatus.textContent = error.message;
+  } finally {
+    agentInstructions.value = '';
+  }
+});
+clearAgentInstructions.addEventListener('click', () =>
+  void updateAgentInstructions({ type: 'saveAgentInstructions', text: '' }));
+void updateAgentInstructions({ type: 'getAgentInstructions' });

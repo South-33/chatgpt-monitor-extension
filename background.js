@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = {
   enforceModelPreferences: true,
   reviewWorkflow: false,
   housekeeping: false,
+  globalAgentInstructions: "",
   enabled: false,
   targetTabIds: [],
   thresholdMinutes: 130,
@@ -44,11 +45,15 @@ const BLOCKED_REVIEW_PROMPT =
   `Before accepting TASK_BLOCKED, identify the exact blocker and check for a reasonable, authorized way to make progress.\n\n${HOUSEKEEPING_GUIDANCE}\n\nIf still blocked, say what you need from the user. ${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only blocker review for this stop attempt.`;
 
 const GENERIC_CONTINUE_PROMPT = "Automated message: Continue";
+// Estimated 128k context plus 16k headroom, at 809 tokens per 9.5 seconds.
+const INSTRUCTION_REFRESH_SECONDS = Math.ceil(144000 * 9.5 / 809);
+const GLOBAL_INSTRUCTIONS_HEADER = "\n\nGlobal AGENTS.md (user instructions)\n";
+const GIT_INSTRUCTIONS_HEADER = "\n\nGit guidance from global AGENTS.md\n";
 const FOLLOW_THROUGH_PROMPT = "Automated message: Continue the previous step. If Improve or Housekeeping is still in progress, pick up where you left off and finish the useful work before moving on. If that step is complete, continue toward the original goal.";
 
 function customContinueText(text) {
   const original = String(text || "");
-  let cleaned = original.trim()
+  let cleaned = promptWithoutInstructions(original.trim())
     .replace(/^this is an? automated system message\(\(user may include[\s\S]*?extra notes\/messages\)\.?\s*/i, '')
     .trim();
   if (cleaned.startsWith(AUTOMATION_NOTE)) {
@@ -65,7 +70,26 @@ function customContinueText(text) {
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
 
 function isShortContinuePrompt(prompt) {
-  return String(prompt || "").trim() === GENERIC_CONTINUE_PROMPT;
+  return promptWithoutInstructions(prompt).trim() === GENERIC_CONTINUE_PROMPT;
+}
+
+function promptWithoutInstructions(prompt) {
+  return String(prompt || "").split(GLOBAL_INSTRUCTIONS_HEADER)[0].split(GIT_INSTRUCTIONS_HEADER)[0];
+}
+
+function globalInstructionSuffix() {
+  if (!settings.globalAgentInstructions) return "";
+  return `${GLOBAL_INSTRUCTIONS_HEADER}Apply these instructions within the original task. If working in a project, reread its applicable AGENTS.md files.\n\n${settings.globalAgentInstructions}`;
+}
+
+function globalGitGuidance() {
+  const lines = settings.globalAgentInstructions.split(/\r?\n/);
+  const start = lines.findIndex(line => /^#{1,6}\s+git\s*#*\s*$/i.test(line));
+  if (start < 0) return "";
+  const depth = lines[start].match(/^#+/)[0].length;
+  const end = lines.findIndex((line, index) => index > start
+    && (line.match(/^(#{1,6})\s+/)?.[1].length ?? Infinity) <= depth);
+  return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
 }
 
 function continuationPrompt(text, preamble = AUTOMATION_NOTE) {
@@ -161,6 +185,7 @@ let settings = { ...DEFAULT_SETTINGS };
 const ready = initialize();
 
 function promptKind(action, prompt) {
+  prompt = promptWithoutInstructions(prompt);
   if (action === "sendTerminalReview") return "terminal-review";
   if (action === "sendContinue" && prompt === RECOVERY_CHECK_PROMPT) return "recovery-check";
   if (action === "sendContinue") {
@@ -228,6 +253,7 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isFinite(details.elapsedMs)) entry.elapsedMs = Math.max(0, details.elapsedMs);
   if (Number.isFinite(details.workedSeconds)) entry.workedSeconds = Math.max(0, Math.round(details.workedSeconds));
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
+  if (details.instructionsAttached === true) entry.instructionsAttached = true;
   if (event === "model-selection-changed" || event === "model-selection-verified") {
     if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details.model)) entry.model = details.model;
     if (["instant", "medium", "high"].includes(details.reasoning)) entry.reasoning = details.reasoning;
@@ -498,12 +524,29 @@ function validHandoffText(text) {
 }
 
 function nextAction(state, phase, name, prompt) {
+  const mode = promptKind(name, prompt);
+  const retry = state.nextActionSource === "action-retry" && prompt === state.actionPrompt;
+  if (!retry) {
+    state.pendingInstructionRefreshAt = null;
+    if (prompt && settings.globalAgentInstructions) {
+      const worked = workedTotal(state);
+      if (worked - (state.instructionRefreshAt || 0) >= INSTRUCTION_REFRESH_SECONDS) {
+        prompt += globalInstructionSuffix();
+        state.pendingInstructionRefreshAt = worked;
+      } else if (mode === "housekeeping") {
+        const git = globalGitGuidance();
+        if (git) prompt += GIT_INSTRUCTIONS_HEADER + git;
+      }
+    }
+  }
   if (state.phase !== phase) state.sendFailures = 0;
   state.retryAt = null;
   state.phase = phase;
   state.actionStartedAt = Date.now();
   state.actionPrompt = prompt || "";
-  state.actionPromptMode = promptKind(name, prompt);
+  state.actionPromptMode = mode;
+  if (name === "sendTerminalReview") state.terminalReviewPrompt = prompt;
+  if (mode === "recovery-check") state.recoveryCheckPrompt = prompt;
   state.actionSource = state.nextActionSource || "automatic";
   state.nextActionSource = null;
   state.issue = "";
@@ -511,7 +554,8 @@ function nextAction(state, phase, name, prompt) {
     tabId: state.tabId,
     source: state.actionSource,
     action: name,
-    promptMode: promptKind(name, prompt),
+    promptMode: mode,
+    instructionsAttached: state.pendingInstructionRefreshAt != null,
     phase,
   });
   return { action: name, prompt };
@@ -605,7 +649,6 @@ function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kin
   // reconsideration. It does not consume the normal continuation cadence.
   state.terminalReviewAttempted = true;
   state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
-  state.terminalReviewPrompt = prompt;
   state.terminalReviewIdleSince = null;
   state.pendingNormalContinue = null;
   state.recoveryCheckPrompt = "";
@@ -632,6 +675,10 @@ function handoffInProgress(state) {
 
 
 function markTransientActionAccepted(state) {
+  if (state.pendingInstructionRefreshAt != null) {
+    state.instructionRefreshAt = state.pendingInstructionRefreshAt;
+    state.pendingInstructionRefreshAt = null;
+  }
   if (state.phase === "sending-continue" && state.pendingNormalContinue) {
     const { custom, useCustom } = state.pendingNormalContinue;
     const followUps = followUpPrompts(controlsForTab(state.tabId)).length;
@@ -771,6 +818,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await diagnosticWrites;
       const { diagnostics } = await chrome.storage.local.get("diagnostics");
       sendResponse({ events: Array.isArray(diagnostics) ? diagnostics : [] });
+      return;
+    }
+
+    if (message.type === "getAgentInstructions" || message.type === "saveAgentInstructions") {
+      if (message.type === "saveAgentInstructions") {
+        if (typeof message.text !== "string" || message.text.length > 32000) {
+          sendResponse({ ok: false, error: "Choose an AGENTS.md file under 32,000 characters." });
+          return;
+        }
+        settings.globalAgentInstructions = message.text.trim();
+        await persistSettings();
+      }
+      sendResponse({ ok: true, configured: Boolean(settings.globalAgentInstructions), hasGit: Boolean(globalGitGuidance()) });
       return;
     }
 
@@ -1092,10 +1152,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.resumePhase = null;
           await recordDiagnostic("pause-changed", { tabId, reason: "resumed", phase: state.phase });
         }
-        const manualHandoffPrompt = handoffPrompt();
         state.recoveryCheckPrompt = "";
-            state.handoffShortRetryUsed = false;
-        requestHandoff(state, manualHandoffPrompt, "manual-handoff");
+        state.handoffShortRetryUsed = false;
+        const manualHandoffPrompt = requestHandoff(state, undefined, "manual-handoff").prompt;
         await persistRuntime();
         try {
           if (needsAttachment) await injectTargetTab(tabId);
@@ -1272,7 +1331,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         prompt: targetMatches(tabId) && !states.get(tabId)?.paused && handoff
           && (!handoff.deliveryFailed || (handoff.retryAt && Date.now() >= handoff.retryAt))
-          ? relayPrompt(handoff.text)
+          ? relayPrompt(handoff.text) + (handoff.instructions || "")
           : null,
       });
       return;
@@ -1280,6 +1339,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "handoffDelivered") {
       if (targetMatches(tabId) && pendingHandoffs.has(tabId)) {
+        const instructionsAttached = Boolean(pendingHandoffs.get(tabId).instructions);
         pendingHandoffs.delete(tabId);
         if (states.get(tabId)?.oneShotHandoff) {
           settings.targetTabIds = settings.targetTabIds.filter((id) => id !== tabId);
@@ -1297,7 +1357,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           states.set(tabId, freshState);
           await persistRuntime();
         }
-        await recordDiagnostic("handoff-delivered", { tabId });
+        await recordDiagnostic("handoff-delivered", { tabId, instructionsAttached });
       }
       sendResponse({ ok: true });
       return;
@@ -1308,6 +1368,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const state = getState(tabId, message.url || sender.tab?.url || "");
         pendingHandoffs.set(tabId, {
           text: message.text.slice(0, 40000),
+          instructions: globalInstructionSuffix(),
         });
         state.phase = "opening-new-chat";
         state.issue = "";
@@ -1396,6 +1457,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           phase: state.phase,
           reason: message.ok ? undefined : message.reason || "unknown",
           success: Boolean(message.ok),
+          instructionsAttached: state.pendingInstructionRefreshAt != null,
           attempt: (state.sendFailures || 0) + 1,
         });
         state.actionSource = "";

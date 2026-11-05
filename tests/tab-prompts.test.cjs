@@ -62,6 +62,9 @@ function worker() {
     'monitoring selected tabs must not enroll other open tabs');
   const reviewUrl = 'https://chatgpt.com/c/4';
   const reviewSender = { tab: { id: 4, url: reviewUrl } };
+  const globalInstructions = '# Working Styles\nKeep scope focused.\n\n# Git\nCommit one coherent decision.\n\n### Example\nExplain what changed and why.\n\n# Project AGENTS.md\nRead project rules.';
+  const importResult = await harness.send({ type: 'saveAgentInstructions', text: globalInstructions });
+  assert.equal(importResult.hasGit, true);
   delete local.runtime.states[4].cycleStage;
   harness = worker();
   const readStage = async () => (await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl })).cycleStage;
@@ -105,6 +108,10 @@ function worker() {
       responseKey: `workflow-${step}`, latestResponseText: 'More work remains.', latestUserText,
     }, reviewSender);
     assert.match(action.prompt, expected);
+    if (step === 5) {
+      assert.match(action.prompt, /Commit one coherent decision\.[\s\S]*Explain what changed and why\./);
+      assert.doesNotMatch(action.prompt, /Keep scope focused|Read project rules/);
+    }
     await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
     const { cycleStage } = await harness.send({ type: 'getMonitorStatus', tabId: 4, url: reviewUrl });
     assert.deepEqual({ ...cycleStage }, { step, total: 6, label });
@@ -194,5 +201,25 @@ function worker() {
   await harness.send({ type: 'saveContinuePreset', index: 3 });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 6 })).settings.continuePresetIndex,
     0, 'a new tab must start on slot one even when the global selection differs');
+
+  const refreshUrl = 'https://chatgpt.com/c/refresh-instructions';
+  const refreshSender = { tab: { id: 6, url: refreshUrl } };
+  await harness.send({ type: 'setMonitoring', enabled: true, tabId: 6, url: refreshUrl });
+  const refreshStatus = (responseKey, workedSeconds) => harness.send({
+    type: 'status', url: refreshUrl, responseKey, workedSeconds,
+    latestResponseText: 'More work remains.', composerEmpty: true,
+  }, refreshSender);
+  const beforeRefresh = await refreshStatus('below-threshold', 1650);
+  assert.doesNotMatch(beforeRefresh.prompt, /Global AGENTS\.md/);
+  await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: refreshUrl }, refreshSender);
+  const refresh = await refreshStatus('past-threshold', 1700);
+  assert.ok(refresh.prompt.startsWith('Automated message: Continue\n\n'));
+  assert.ok(refresh.prompt.endsWith(globalInstructions));
+  await harness.send({ type: 'commandResult', action: 'sendContinue', ok: false, url: refreshUrl }, refreshSender);
+  harness = worker();
+  await harness.send({ type: 'retryNow', tabId: 6 });
+  assert.equal((await refreshStatus('past-threshold', 1700)).prompt, refresh.prompt);
+  await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: refreshUrl }, refreshSender);
+  assert.doesNotMatch((await refreshStatus('after-refresh', 1800)).prompt, /Global AGENTS\.md/);
   console.log('tab_prompts_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

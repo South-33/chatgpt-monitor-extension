@@ -16,4 +16,6 @@ Hover over the cycle number to see the current stage name.
 
 Open **Logs** to choose a folder for JSONL diagnostics or download a copy. New files are split by day and tab ID. The logs exclude chat text and page URLs.
 
+Import your global `AGENTS.md` from **Logs**. Housekeeping includes its Git section. After about 28 minutes of tracked work, the next automated prompt refreshes the global instructions and asks the agent to reread the project's instructions. Fresh handoffs also include the global instructions.
+
 Run the tests with `node --test tests/*.test.cjs`.

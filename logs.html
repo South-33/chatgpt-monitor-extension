@@ -25,6 +25,13 @@
       <button id="downloadLogs" class="secondary">Download logs instead</button>
     </div>
     <p id="status" role="status"></p>
+    <h2>Global AGENTS.md</h2>
+    <p>Import the file to include its Git section in Housekeeping and refresh the full instructions in monitored ChatGPT conversations. Import it again after edits.</p>
+    <div class="actions">
+      <input id="agentInstructions" type="file" accept=".md,.txt" aria-label="Import global AGENTS.md" />
+      <button id="clearAgentInstructions" type="button" class="secondary" hidden>Clear</button>
+    </div>
+    <p id="agentInstructionsStatus" role="status"></p>
     <script src="log-files.js"></script>
     <script src="logs.js"></script>
   </body>

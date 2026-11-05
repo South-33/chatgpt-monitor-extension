@@ -7,7 +7,8 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'logs.js'), 'utf8');
 assert.ok(fs.existsSync(path.join(__dirname, '..', 'logs')), 'a selectable logs directory must exist');
 
 async function fixture({ pickerWorks = true, currentFolder = null } = {}) {
-  const buttons = new Map(['chooseFolder', 'reconnectFolder', 'downloadLogs'].map(id => [id, {
+  const buttons = new Map(['chooseFolder', 'reconnectFolder', 'downloadLogs', 'agentInstructions',
+    'clearAgentInstructions', 'agentInstructionsStatus'].map(id => [id, {
     disabled: false, hidden: false, addEventListener(_event, handler) { this.click = handler; },
   }]));
   const status = { textContent: '' };
