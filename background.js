@@ -38,7 +38,7 @@ const LEGACY_AUTOMATION_NOTE =
   "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
 
 const HOUSEKEEPING_GUIDANCE =
-  "Keep the active work clean and current as you pursue the goal. Use your judgment about which clutter makes the next useful step harder. Give related work one clear home, keep the source of truth current, and consolidate or retire obsolete material where it helps. Preserve useful checks, unique evidence, and unrelated work.";
+  "Make the active work easy to find, understand, and maintain. Use your judgment to consolidate scattered work and remove redundant code, tests, docs, or artifacts where it helps. Preserve useful checks, unique evidence, and unrelated work. Finish when the next person or agent can pick up the work easily and further cleanup would add little value.";
 
 const GIT_GUIDANCE =
   "If the task calls for commits, group related changes into one meaningful checkpoint per coherent decision. Let work accumulate while a decision is still in progress. Use the project's style. Write a title that explains why the change matters and a body that records the reason, evidence, and what a reviewer may need to rerun.";
@@ -87,8 +87,8 @@ function continuationPrompt(text) {
 }
 
 const CYCLE_GUIDANCE = new Map([
-  ["improve", "Improve the agent harness so the remaining work is faster, more reliable, or easier to judge. Look at where recent work lost time, repeated effort, or lacked good evidence. Use your judgment about what would help most with the tools and resources available. Give unconventional approaches a real try when they could pay off, including custom tools or a replacement workflow. Verify the benefit on representative work."],
-  ["housekeeping", `${HOUSEKEEPING_GUIDANCE} Make the work easier to find, understand, and maintain with less code, fewer tests, or fewer docs where they duplicate what is already covered.\n\n${GIT_GUIDANCE}`],
+  ["improve", "Improve the agent harness where it will most help the remaining work. Use recent delays, errors, or poor evidence to choose what to improve. Try a new tool or replace the workflow if that would help more. Finish once you verify a meaningful gain in speed, reliability, or evidence quality on representative work, or judge that further changes would add little value."],
+  ["housekeeping", `${HOUSEKEEPING_GUIDANCE}\n\n${GIT_GUIDANCE}`],
 ]);
 
 function cycleTaskPrompt(task) {
@@ -96,7 +96,7 @@ function cycleTaskPrompt(task) {
   if (!guidance) return "";
   const marker = task.toUpperCase();
   const label = task === "improve" ? "Improve" : "Housekeeping";
-  return `This is an automated continuation. Use your judgment and pick up this step from where it stands.\n\n${label} contract\n${guidance}\n\nUse a marker from this contract only, on its own final line. Use ${marker}_FINISHED when the useful work is verified or there is nothing worth changing. Use ${marker}_BLOCKED if you cannot make useful progress and explain why. While this step is in progress, use neither marker. The Goal contract resumes separately.`;
+  return `This is an automated continuation. Use your judgment and pick up this step from where it stands.\n\n${label} contract\n${guidance}\n\nEnd with ${marker}_FINISHED on its own final line when this step is done, including when no worthwhile change is needed. If something prevents useful work on this step, explain why and end with ${marker}_BLOCKED. Use neither marker while work on this step remains. The Goal contract resumes separately.`;
 }
 
 function sameSubmittedPrompt(actual, expected) {
@@ -631,11 +631,10 @@ function terminalReviewPromptFor(kind) {
   const review = kind === "blocked"
     ? "Check the exact blocker and look for a reasonable, authorized way to make progress."
     : "Check the original goal and acceptance criteria against the evidence. Verify any clear gap.";
-  return `This is an automated check. Use your judgment.\n\nReconsider contract\n${review} Decide whether the original goal should stop or continue. If a useful path remains, state it and let the Goal contract take over.\n\nOnce you reach a decision, end with exactly one of these markers on its own line. RECONSIDER_FINISHED means the goal is complete and verified. RECONSIDER_BLOCKED means no authorized progress is possible without user action. Explain the blocker and what is needed. RECONSIDER_CONTINUE means useful work can resume. While the review is in progress, use no marker.`;
+  return `This is an automated check. Use your judgment.\n\nReconsider contract\n${review} Check only what you need to make the decision.\n\nOnce you have enough evidence, end with one marker on its own final line. Use RECONSIDER_FINISHED if the goal is verified. Use RECONSIDER_BLOCKED if progress needs user action and say what is needed. Use RECONSIDER_CONTINUE if you see a useful path and say what the Goal contract should do next. While the decision is still open, use no marker.`;
 }
 
 function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kind), source = "terminal-review") {
-  // Mark the attempt before dispatch so a restart cannot start a second
   // Reconsider does not consume a Goal turn.
   state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
   state.terminalReviewIdleSince = null;
