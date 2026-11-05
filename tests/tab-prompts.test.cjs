@@ -77,6 +77,10 @@ function worker() {
     'monitoring selected tabs must not enroll other open tabs');
   const reviewUrl = 'https://chatgpt.com/c/4';
   const reviewSender = { tab: { id: 4, url: reviewUrl } };
+  assert.equal((await harness.send({ type: 'sendCyclePrompt', tabId: 5,
+    url: 'https://chatgpt.com/c/5', kind: 'housekeeping' })).ok, true);
+  assert.match(harness.deliveries.at(-1).prompt,
+    /\*\*BAD\*\*\n> refactor\(stash\)[\s\S]*\*\*GOOD\*\*\n> fix\(web\): stashed prompts now survive switching providers/);
   const globalInstructions = '# Working Styles\nKeep scope focused.\n\n# Git\nCommit one coherent decision.\n\n### Example\nExplain what changed and why.\n\n# Project AGENTS.md\nRead project rules.';
   const importResult = await harness.send({ type: 'saveAgentInstructions', text: globalInstructions });
   assert.equal(importResult.hasGit, true);

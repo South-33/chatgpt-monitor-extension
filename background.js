@@ -40,8 +40,16 @@ const LEGACY_AUTOMATION_NOTE =
 const HOUSEKEEPING_GUIDANCE =
   "Make the active work easy to find, understand, and maintain. Use your judgment to consolidate scattered work and remove redundant code, tests, docs, or artifacts where it helps. Preserve useful checks, unique evidence, and unrelated work. Finish when the next person or agent can pick up the work easily and further cleanup would add little value.";
 
-const GIT_GUIDANCE =
-  "If the task calls for commits, group related changes into one meaningful checkpoint per coherent decision. Let work accumulate while a decision is still in progress. Use the project's style. Write a title that explains why the change matters and a body that records the reason, evidence, and what a reviewer may need to rerun.";
+const GIT_COMMIT_EXAMPLE = `Example:
+**BAD**
+> refactor(stash): rework prompt bucketing to use single global queue
+>
+> Changed stash storage from per-provider-instance buckets to one global queue that stores only prompt text and image attachments. Updated restore logic to drop into the currently selected thread/provider instead of the stash's origin provider. Removed model-selection restoration from the stash flow. Added startup purge for legacy per-provider (v1) stash payloads instead of migrating them, since they were squatting on the ~5MB localStorage quota. Verified with store unit tests and a manual browser pass.
+
+**GOOD**
+> fix(web): stashed prompts now survive switching providers
+>
+> Stashing a prompt, switching providers, and restoring it didn't work: the stash was bucketed per provider instance, so after a switch the badge disappeared and the stash looked lost. Restoring also dragged the stashed model selection back, defeating the point of moving a prompt to a different provider. The stash is now one global queue that carries only what every provider accepts — restore drops into whatever thread/provider is currently selected and leaves the model choice alone.`;
 
 const GOAL_TURNS_PER_ROUND = 3;
 // Estimated 128k context plus 16k headroom, at 809 tokens per 9.5 seconds.
@@ -82,13 +90,18 @@ function globalGitGuidance() {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
 }
 
+function housekeepingGitSuffix(includesGlobalInstructions = false) {
+  const git = globalGitGuidance();
+  return git && includesGlobalInstructions ? "" : GIT_INSTRUCTIONS_HEADER + (git || GIT_COMMIT_EXAMPLE);
+}
+
 function continuationPrompt(text) {
   return `${AUTOMATION_NOTE}\n\n${text.trim() || "Continue."}\n\n${GOAL_CONTRACT}`;
 }
 
 const CYCLE_GUIDANCE = new Map([
-  ["improve", "Improve the agent harness where it will most help the remaining work. Find the recurring bottleneck that costs the agent the most time, reliability, or useful evidence. Ask what you would build from scratch with the tools and hardware available. Give a promising unconventional idea a real trial. Build custom tooling, change how you gather or present evidence, or replace the whole workflow if that offers the best result. Test it on representative work and judge the end-to-end gain. Finish when you verify a meaningful improvement or have good reason to expect little payoff from further work."],
-  ["housekeeping", `${HOUSEKEEPING_GUIDANCE}\n\n${GIT_GUIDANCE}`],
+  ["improve", "Improve the agent harness where it will most help the remaining work. Find the recurring bottleneck that costs the agent the most time, reliability, or useful evidence. Ask what you would build from scratch for this goal with the tools and hardware available. Use your judgment to choose the strongest approach and give it a real trial. Be willing to build custom tools, change how you gather or present evidence, or replace the whole workflow if that is the best fit. Judge the end-to-end result on representative work. Finish when you verify a meaningful gain or have good reason to expect little payoff from further work."],
+  ["housekeeping", HOUSEKEEPING_GUIDANCE],
 ]);
 
 function cycleTaskPrompt(task) {
@@ -512,11 +525,12 @@ function terminalStatus(text, task = "goal") {
   return match ? match[1].toLowerCase() : null;
 }
 
-function relayPrompt(handoff, state) {
+function relayPrompt(handoff, state, instructions) {
   const relay = `${HANDOFF_RELAY}\n\n${handoff}`;
   const activeStep = cycleTaskPrompt(state?.cycleTask);
-  return activeStep ? `${relay}\n\nResume the current step first.\n\n${activeStep}`
-    : `${relay}\n\n${continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)))}`;
+  if (!activeStep) return `${relay}\n\n${continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)))}`;
+  const git = state.cycleTask === "housekeeping" ? housekeepingGitSuffix(Boolean(instructions)) : "";
+  return `${relay}\n\nResume the current step first.\n\n${activeStep}${git}`;
 }
 
 
@@ -535,11 +549,9 @@ function nextAction(state, phase, name, prompt) {
       if (worked - (state.instructionRefreshAt || 0) >= INSTRUCTION_REFRESH_SECONDS) {
         prompt += globalInstructionSuffix();
         state.pendingInstructionRefreshAt = worked;
-      } else if (mode === "housekeeping") {
-        const git = globalGitGuidance();
-        if (git) prompt += GIT_INSTRUCTIONS_HEADER + git;
       }
     }
+    if (mode === "housekeeping") prompt += housekeepingGitSuffix(state.pendingInstructionRefreshAt != null);
   }
   if (state.phase !== phase) state.sendFailures = 0;
   state.retryAt = null;
@@ -1073,8 +1085,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "The conversation changed. Open the popup and try again." });
           return;
         }
-        const git = message.kind === "housekeeping" ? globalGitGuidance() : "";
-        const prompt = git ? basePrompt + GIT_INSTRUCTIONS_HEADER + git : basePrompt;
+        const prompt = basePrompt + (message.kind === "housekeeping" ? housekeepingGitSuffix() : "");
         const deliver = () => chrome.tabs.sendMessage(tabId, {
           type: "sendCyclePrompt", prompt, expectedUrl: message.url,
         }, { frameId: 0 });
@@ -1401,7 +1412,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         prompt: targetMatches(tabId) && !states.get(tabId)?.paused && handoff
           && (!handoff.deliveryFailed || (handoff.retryAt && Date.now() >= handoff.retryAt))
-          ? (handoff.prompt || relayPrompt(handoff.text, states.get(tabId))) + (handoff.instructions || "")
+          ? (handoff.prompt || relayPrompt(handoff.text, states.get(tabId), handoff.instructions)) + (handoff.instructions || "")
           : null,
       });
       return;
@@ -1441,10 +1452,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (targetMatches(tabId) && validHandoffText(message.text)) {
         const state = getState(tabId, message.url || sender.tab?.url || "");
         const text = message.text.slice(0, 40000);
+        const instructions = globalInstructionSuffix();
         pendingHandoffs.set(tabId, {
           text,
-          prompt: relayPrompt(text, state),
-          instructions: globalInstructionSuffix(),
+          prompt: relayPrompt(text, state, instructions),
+          instructions,
         });
         state.phase = "opening-new-chat";
         state.issue = "";
