@@ -15,6 +15,7 @@ async function contentChecks() {
   let written = 0;
   let submitted = false;
   let switchOnOwnership = true;
+  let switchOnModel = false;
   const composer = {};
   const button = {};
   const ctx = {
@@ -36,8 +37,8 @@ async function contentChecks() {
     HTMLButtonElement: { prototype: { click() { clicks++; submitted = true; } } },
     normalizedText: text => text.trim(),
     visible: () => true,
-    ensureModelPreferences: async () => {
-      if (switchOnOwnership) location.href = newUrl;
+    applyModelPreferences: async () => {
+      if (switchOnModel) location.href = newUrl;
       return true;
     },
     setComposerText: async () => { written++; return true; },
@@ -54,11 +55,17 @@ async function contentChecks() {
 
   location.href = oldUrl;
   assert.equal(await ctx.sendPrompt('continue'), false,
-    'navigation while setting preferences must prevent text from being written');
+    'navigation before preparing the draft must prevent text from being written');
   assert.equal(written, 0);
   assert.equal(clicks, 0);
 
   switchOnOwnership = false;
+  switchOnModel = true;
+  location.href = oldUrl;
+  assert.equal(await ctx.submitComposer(composer, oldUrl), false,
+    'navigation during model selection must cancel Send');
+  assert.equal(clicks, 0);
+  switchOnModel = false;
   location.href = `${oldUrl}?messageId=current`;
   assert.equal(await ctx.submitComposer(composer, oldUrl), true,
     'the same conversation can submit after harmless query-string changes');

@@ -34,7 +34,7 @@ function editor(initialDraft = '') {
 
 const prompt = 'Another agent worked on this original task. Continue using the verified evidence.';
 
-async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true, modelStaysReady = true } = {}) {
+async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true, requirePlugin = true } = {}) {
   const composer = editor(initialDraft);
   let inserted = 0;
   let sendAttempts = 0;
@@ -66,24 +66,21 @@ async function scenario(initialDraft = '', pluginPresent = true, { modelOk = tru
     findSendButton: () => ({ ready: inserted > 0 || initialDraft === prompt }),
     sendButtonReady: button => button.ready,
     waitFor: async predicate => Boolean(predicate()),
-    ensureModelPreferences: async (_preferences, force) => {
+    applyModelPreferences: async preferences => {
       assert.equal(context.composerText(composer), prompt,
         'verify the model after the draft has reached the composer');
-      verifications.push(force);
+      verifications.push(preferences.preferredModel);
       if (!modelKeepsPlugin) pluginPresent = false;
       return modelOk;
     },
     pluginSelected: () => pluginPresent,
-    handoffModelReady: () => modelStaysReady,
-    composerModelEvidence: () => ({ observedModel: 'GPT-6' }),
-    verifiedModelSelection: { changed: true },
     HTMLButtonElement: class { click() { sendAttempts++; } },
     clearComposer: async () => { cleared++; },
   };
   vm.runInNewContext(`${composerHelpers}\n${submitSource}\n${sendSource}`, context);
   assert.equal(context.composerText(composer), initialDraft,
     'selected spacedev mention must not count as an unsent draft');
-  const delivered = await context.sendPrompt(prompt, true);
+  const delivered = await context.sendPrompt(prompt, requirePlugin);
   return { context, composer, delivered, inserted, sendAttempts, verifications, cleared };
 }
 
@@ -101,7 +98,6 @@ async function deliveryScenario() {
     isConversationPage: () => false,
     isGenerating: () => false,
     findComposer: () => composer,
-    modelPickerTrigger: () => ({}),
     visible: () => true,
     waitFor: async predicate => predicate() || predicate(),
     latestUserMatchesPrompt: () => false,
@@ -120,7 +116,7 @@ async function deliveryScenario() {
     },
   };
   vm.runInNewContext(deliverySource, context);
-  await context.deliverPendingHandoff({ preferredReasoning: 'high' });
+  await context.deliverPendingHandoff();
   return { events, delivered, reason: context.lastPromptFailureReason };
 }
 
@@ -129,8 +125,12 @@ async function deliveryScenario() {
   assert.equal(clean.delivered, true, 'plugin-only editor accepts a handoff');
   assert.equal(clean.inserted, 1);
   assert.equal(clean.sendAttempts, 1);
-  assert.deepEqual(clean.verifications, [true],
-    'fresh handoff opens the picker once, immediately before send');
+  assert.deepEqual(clean.verifications, ['GPT-6'],
+    'fresh handoff applies the model once, immediately before send');
+  const continuation = await scenario('', false, { requirePlugin: false });
+  assert.equal(continuation.delivered, true);
+  assert.deepEqual(continuation.verifications, ['GPT-6'],
+    'continuation uses the same draft → model → send path');
   assert.equal(clean.context.composerText(clean.composer), prompt,
     'handoff is inserted after and independently of the plugin mention');
   assert.strictEqual(clean.composer.childNodes[0].childNodes[0], mention,
@@ -155,9 +155,6 @@ async function deliveryScenario() {
   const modelFailure = await scenario('', true, { modelOk: false });
   assert.equal(modelFailure.context.lastPromptFailureReason, 'model-preference');
   assert.equal(modelFailure.delivered, false, 'handoff must not send when preferred model verification fails');
-  const modelReset = await scenario('', true, { modelStaysReady: false });
-  assert.equal(modelReset.context.lastPromptFailureReason, 'model-unconfirmed');
-  assert.equal(modelReset.sendAttempts, 0, 'a late composer model reset must block the actual Send click');
 
   const pluginLost = await scenario('', true, { modelKeepsPlugin: false });
   assert.equal(pluginLost.context.lastPromptFailureReason, 'plugin-selection-lost');

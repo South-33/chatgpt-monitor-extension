@@ -7,7 +7,7 @@ const flow = source.slice(source.indexOf('function modelPickerTrigger()'), sourc
 
 function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') {
   let open = false, advanced = false, selected = initialModel, effort = compact ? 'high' : 'medium';
-  let generating = false, blocked = false, paused = false, clock = 1000;
+  let generating = false, blocked = false, paused = false;
   const clicks = [], reports = [];
   const preferences = { preferredModel: 'GPT-5.6 Sol', preferredReasoning: 'high' };
   const node = (text, attrs = {}) => ({
@@ -79,7 +79,6 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
     normalizedControlText: text => (text || '').replace(/\s+/g, ' ').trim(),
     visible: element => Boolean(element), controlReady: element => Boolean(element && !element.disabled),
     controlMenuOpen: () => open, isGenerating: () => generating, hasBlockingUi: () => blocked,
-    Date: { now: () => clock },
     KeyboardEvent: class { constructor(type, properties) { this.type = type; Object.assign(this, properties); } },
     waitFor: async predicate => {
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -106,7 +105,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   vm.runInNewContext(`${initialState}\n${flow}`, ctx);
   return { ctx, preferences, clicks, reports, trigger, menu, models,
     setGenerating: value => { generating = value; }, setBlocked: value => { blocked = value; },
-    setPaused: value => { paused = value; }, advance: () => { clock += 30001; },
+    setPaused: value => { paused = value; },
     selection: () => ({ selected, effort, open }),
   };
 }
@@ -114,7 +113,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
 (async () => {
   const f = fixture();
   const loading = fixture(3);
-  assert.equal(await loading.ctx.ensureModelPreferences(loading.preferences), true,
+  assert.equal(await loading.ctx.applyModelPreferences(loading.preferences), true,
     'a mounted menu with controls still loading must settle before selection');
   assert.equal(loading.reports.some(report => !report.ok), false, 'loading is not a picker failure');
   const perf = fixture();
@@ -127,19 +126,13 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   perf.ctx.controlReady = element => { layoutChecks++; return Boolean(element); };
   assert.equal(perf.ctx.modelPickerTrigger(), perf.trigger);
   assert.equal(layoutChecks, 1, 'only model candidates require a layout/visibility read');
-  assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
+  assert.equal(await f.ctx.applyModelPreferences(f.preferences), true);
   assert.deepEqual(f.selection(), { selected: 'GPT-5.6 Sol', effort: 'high', open: false });
-  const count = f.clicks.length;
-  assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
-  assert.equal(f.clicks.length, count, 'idle checks reuse unchanged verified state');
-  assert.equal(await f.ctx.ensureModelPreferences(f.preferences, true), true);
-  assert.equal(f.ctx.handoffModelReady(f.preferences), true);
-  assert.equal(f.clicks.filter(element => element === f.models[1]).length, 1,
-    'pre-send verification must not select an already checked model');
-  f.trigger.innerText = 'Thinking effort\nHigh';
-  assert.equal(f.ctx.handoffModelReady(f.preferences), false, 'recheck the model at the send boundary even if effort stays High');
+  assert.equal(await f.ctx.applyModelPreferences(f.preferences), true);
+  assert.equal(f.clicks.filter(element => element === f.models[1]).length, 2,
+    'each send selects the configured model, even when its row was already checked');
   f.preferences.preferredReasoning = 'instant';
-  assert.equal(await f.ctx.ensureModelPreferences(f.preferences), true);
+  assert.equal(await f.ctx.applyModelPreferences(f.preferences), true);
   assert.equal(f.selection().effort, 'instant');
 
   const gpt6 = fixture(0, true);
@@ -147,84 +140,53 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(gpt6.trigger.innerText, 'High', 'GPT-6 only displays effort on its closed trigger');
   assert.equal(gpt6.ctx.modelPickerTrigger(), gpt6.trigger,
     'compact High trigger must be found beside the composer without a model label');
-  assert.equal(await gpt6.ctx.ensureModelPreferences(gpt6.preferences), true);
+  assert.equal(await gpt6.ctx.applyModelPreferences(gpt6.preferences), true);
   assert.equal(gpt6.selection().selected, 'GPT-6');
-  assert.equal(gpt6.trigger.innerText, 'High', 'verification does not require a visible GPT-6 name');
-  assert.equal(gpt6.clicks.includes(gpt6.models[0]), false,
-    'an already-checked GPT-6 entry must not be clicked again');
-  const gpt6Clicks = gpt6.clicks.length;
-  assert.equal(await gpt6.ctx.ensureModelPreferences(gpt6.preferences), true);
-  assert.equal(gpt6.clicks.length, gpt6Clicks, 'verified compact GPT-6 is cached');
+  assert.equal(gpt6.trigger.innerText, 'High', 'selection does not require a visible GPT-6 name');
+  assert.equal(gpt6.clicks.includes(gpt6.models[0]), true);
 
   const switchToGpt6 = fixture(0, true, 'GPT-5.6 Sol');
   switchToGpt6.preferences.preferredModel = 'GPT-6';
   switchToGpt6.preferences.preferredReasoning = 'medium';
-  assert.equal(await switchToGpt6.ctx.ensureModelPreferences(switchToGpt6.preferences), true,
+  assert.equal(await switchToGpt6.ctx.applyModelPreferences(switchToGpt6.preferences), true,
     'GPT-6 model selection and nested slider changes work from a High-only trigger');
   assert.equal(switchToGpt6.selection().selected, 'GPT-6');
   assert.equal(switchToGpt6.selection().effort, 'medium');
   assert.equal(switchToGpt6.trigger.innerText, 'Medium',
     'collapsed GPT-6 control displays only the new effort level');
 
-  const resetOnClose = fixture(0, false, 'GPT-5.6 Sol');
-  const close = resetOnClose.menu.dispatchEvent;
-  resetOnClose.menu.dispatchEvent = event => {
-    close(event);
-    resetOnClose.trigger.innerText = 'Thinking effort5.6 Medium';
-  };
-  assert.equal(await resetOnClose.ctx.ensureModelPreferences(resetOnClose.preferences, true), false,
-    'do not authorize a send if reasoning reverts after closing the picker');
-  assert.equal(resetOnClose.reports.at(-1).reason, 'reasoning-unavailable');
-
-  const modelReset = fixture(0, false, 'GPT-5.6 Sol');
-  const closeModel = modelReset.menu.dispatchEvent;
-  modelReset.menu.dispatchEvent = event => {
-    closeModel(event);
-    modelReset.trigger.innerText = 'Thinking effort\nHigh';
-  };
-  assert.equal(await modelReset.ctx.ensureModelPreferences(modelReset.preferences, true), false,
-    'a checked menu row cannot authorize sending when the closed composer reverts to GPT-6 High');
-  assert.equal(modelReset.reports.at(-1).reason, 'model-unconfirmed');
-  assert.equal(modelReset.reports.at(-1).observedModel, 'GPT-6');
-
   const disabled = fixture();
   disabled.preferences.enforceModelPreferences = false;
-  assert.equal(await disabled.ctx.ensureModelPreferences(disabled.preferences), true);
+  assert.equal(await disabled.ctx.applyModelPreferences(disabled.preferences), true);
   assert.equal(disabled.clicks.length, 0, 'unchecked box does not open picker or change reasoning');
   disabled.preferences.enforceModelPreferences = true;
-  assert.equal(await disabled.ctx.ensureModelPreferences(disabled.preferences), true,
+  assert.equal(await disabled.ctx.applyModelPreferences(disabled.preferences), true,
     're-enabling automation rechecks the selected model');
 
   for (const gate of ['setGenerating', 'setBlocked', 'setPaused']) {
     const guarded = fixture(); guarded[gate](true);
-    assert.equal(await guarded.ctx.ensureModelPreferences(guarded.preferences), false);
+    assert.equal(await guarded.ctx.applyModelPreferences(guarded.preferences), false);
     assert.equal(guarded.clicks.length, 0, `${gate} must prevent selection`);
     assert.equal(guarded.reports.length, 0, 'an ownership gate is not a preference error');
   }
   const missing = fixture();
   missing.preferences.preferredModel = 'GPT-5.6';
-  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), false, 'do not fuzzy match another model variant');
+  assert.equal(await missing.ctx.applyModelPreferences(missing.preferences), false, 'do not fuzzy match another model variant');
   assert.equal(missing.reports.at(-1).reason, 'model-unavailable');
   assert.equal(missing.selection().open, false);
-  const failedClicks = missing.clicks.length;
-  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), false);
-  assert.equal(missing.clicks.length, failedClicks, 'failed selections back off');
-  missing.advance();
-  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), false);
-  assert.equal(missing.reports.at(-1).repeated, true, 'repeated errors do not produce noisy logs');
   missing.preferences.preferredModel = 'GPT-5.6 Sol';
-  assert.equal(await missing.ctx.ensureModelPreferences(missing.preferences), true, 'changing settings bypasses the previous failure backoff');
+  assert.equal(await missing.ctx.applyModelPreferences(missing.preferences), true);
 
   const interrupted = fixture();
   const click = interrupted.ctx.clickControl;
   interrupted.ctx.clickControl = element => { click(element); interrupted.setPaused(true); };
-  assert.equal(await interrupted.ctx.ensureModelPreferences(interrupted.preferences), false);
+  assert.equal(await interrupted.ctx.applyModelPreferences(interrupted.preferences), false);
   assert.equal(interrupted.clicks.length, 1, 'pause during menu opening prevents selection');
   assert.equal(interrupted.selection().selected, 'GPT-6');
   assert.equal(interrupted.selection().open, false, 'close only the menu opened by this flow');
   const unchanged = fixture();
   unchanged.preferences.preferredModel = unchanged.preferences.preferredReasoning = '';
-  assert.equal(await unchanged.ctx.ensureModelPreferences(unchanged.preferences), true);
+  assert.equal(await unchanged.ctx.applyModelPreferences(unchanged.preferences), true);
   assert.equal(unchanged.clicks.length, 0);
   console.log('model_selection_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

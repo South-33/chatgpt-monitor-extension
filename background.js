@@ -137,7 +137,7 @@ const SENDING_PHASES = new Set(["sending-continue", "sending-handoff", "sending-
 const MAX_DIAGNOSTIC_EVENTS = 500;
 const DIAGNOSTIC_EVENTS = new Set([
   "approval_detected", "approval_resolved", "approval_pending",
-  "model-selection-changed", "model-selection-failed", "model-selection-verified",
+  "model-selection-applied", "model-selection-failed",
   "monitoring-changed",
   "pause-changed",
   "watchdog-detected",
@@ -217,7 +217,7 @@ function recordDiagnostic(event, details = {}) {
       "unreadable-check-in",
       "connection-interrupted", "stream-error", "missing-final-answer",
       "review-reply-unconfirmed",
-      "picker-unavailable", "model-unavailable", "model-unconfirmed", "reasoning-unavailable",
+      "picker-unavailable", "model-unavailable", "reasoning-unavailable",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
       "model-preference", "conversation-changed", "composer-changed",
       "composer-has-draft", "composer-insert-failed", "composer-text-mismatch",
@@ -247,13 +247,8 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
   if (details.instructionsAttached === true) entry.instructionsAttached = true;
   if (event.startsWith("model-selection-")) {
-    for (const field of ["model", "observedModel"]) {
-      if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details[field])) entry[field] = details[field];
-    }
-    for (const field of ["reasoning", "observedReasoning"]) {
-      if (["instant", "medium", "high"].includes(details[field])) entry[field] = details[field];
-    }
-    if (typeof details.changed === "boolean") entry.changed = details.changed;
+    if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details.model)) entry.model = details.model;
+    if (["instant", "medium", "high"].includes(details.reasoning)) entry.reasoning = details.reasoning;
   }
 
   diagnosticWrites = diagnosticWrites.then(async () => {
@@ -833,18 +828,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
       if (tabId !== undefined) settings.tabControls[tabId] = controls;
-      const modelChanged = previous.preferredModel !== controls.preferredModel
-        || previous.preferredReasoning !== controls.preferredReasoning
-        || previous.enforceModelPreferences !== controls.enforceModelPreferences;
-      if (modelChanged) {
-        for (const state of states.values()) {
-          if (tabId !== undefined && state.tabId !== tabId) continue;
-          if (tabId === undefined && settings.tabControls?.[state.tabId]) continue;
-          if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
-          state.modelPreferenceIssue = "";
-        }
-        await persistRuntime();
-      }
       await persistSettings();
       syncKeepAwake();
       sendResponse({ settings });
@@ -1106,7 +1089,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const errors = {
           "stop-control-remained-visible": "ChatGPT did not stop. Try again when it is idle.",
           "composer-has-draft": "Clear or send the draft in ChatGPT first.",
-          "model-preference": "Could not verify the model. Check the model settings.",
+          "model-preference": "Could not apply the model settings before sending.",
+          "picker-unavailable": "Could not open the model picker.",
+          "model-unavailable": "The configured model is unavailable in ChatGPT.",
+          "reasoning-unavailable": "Could not set the configured reasoning level.",
           "send-not-confirmed": "Check ChatGPT to see whether the prompt was sent.",
           "composer-blocked": "ChatGPT is busy or has a dialog open.",
           "monitor-not-ready": "The monitor is still checking the page. Try again shortly.",
@@ -1235,30 +1221,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = senderTabId;
 
     if (message.type === "modelPreferenceResult") {
-      if (targetMatches(tabId)) {
-        const state = getState(tabId, sender.tab?.url || "");
-        const { model, reasoning, observedModel, observedReasoning, changed } = message;
-        const evidence = { tabId, model, reasoning, observedModel, observedReasoning, changed };
-        const issues = {
-          "picker-unavailable": "Waiting for the model picker. Retrying automatically.",
-          "model-unavailable": "The selected model is unavailable. Check the model setting.",
-          "model-unconfirmed": "ChatGPT did not confirm the model on the composer. Retrying before sending.",
-          "reasoning-unavailable": "The selected reasoning level is unavailable. Check the reasoning setting.",
-        };
-        if (message.ok) {
-          if (state.modelPreferenceIssue && state.issue.startsWith(state.modelPreferenceIssue)) state.issue = "";
-          state.modelPreferenceIssue = "";
-          if (message.verifiedForSend || message.changed) {
-            void recordDiagnostic(message.verifiedForSend ? "model-selection-verified" : "model-selection-changed", {
-              ...evidence, success: true,
-            });
-          }
-        } else if (issues[message.reason]) {
-          state.modelPreferenceIssue = issues[message.reason];
-          state.issue = state.modelPreferenceIssue;
-          if (!message.repeated) void recordDiagnostic("model-selection-failed", { ...evidence, reason: message.reason, success: false });
-        }
-        await persistRuntime();
+      if (targetMatches(tabId) || cyclePromptsInFlight.has(tabId)) {
+        void recordDiagnostic(message.ok ? "model-selection-applied" : "model-selection-failed", {
+          tabId, model: message.model, reasoning: message.reasoning,
+          success: Boolean(message.ok), reason: message.ok ? undefined : message.reason,
+        });
       }
       sendResponse({ ok: true });
       return;
@@ -1298,7 +1265,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ target: message.cyclePrompt ? cyclePromptPending : target,
         paused: !message.cyclePrompt && Boolean(state?.paused || cyclePromptPending), cyclePromptPending,
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
-        waitingForTerminalReview: state?.phase === "waiting-for-terminal-review",
         thinkingMinutes: settings.thinkingMinutes,
         enforceModelPreferences: controls.enforceModelPreferences !== false,
         preferredModel: controls.preferredModel, preferredReasoning: controls.preferredReasoning,
@@ -1478,8 +1444,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "plugin-selection-lost": "The configured plugin was not selected before sending. Reconnect it, then Retry.",
             "composer-insert-failed": "Could not insert the prompt into ChatGPT's composer. Refresh ChatGPT, then Retry.",
             "composer-text-mismatch": "ChatGPT did not retain the inserted prompt text. Refresh ChatGPT, then Retry.",
-            "model-preference": "Could not verify the selected model before sending. Check the model settings.",
-            "model-unconfirmed": "The composer changed after model verification. Retrying before sending.",
+            "model-preference": "Could not apply the model settings before sending.",
+            "picker-unavailable": "Could not open the model picker.",
+            "model-unavailable": "The configured model is unavailable in ChatGPT.",
+            "reasoning-unavailable": "Could not set the configured reasoning level.",
             "composer-unavailable": "ChatGPT's composer is not available. Refresh the tab, then Retry.",
             "conversation-changed": "The monitored conversation changed before the prompt could be sent.",
             "composer-changed": "ChatGPT replaced the composer before the prompt could be sent.",
@@ -1523,8 +1491,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             rotateWithHandoff: "Could not capture the handoff.",
             deliverHandoff: "Could not submit the handoff in the fresh chat.",
           };
-          state.issue = state.modelPreferenceIssue
-            || (message.action === "deliverHandoff" && handoffFailureMessages[message.reason])
+          state.issue = (message.action === "deliverHandoff" && handoffFailureMessages[message.reason])
             || promptFailureMessages[message.reason]
             || issueByAction[message.action] || "Could not submit the prompt.";
           if (state.retryAt || pendingHandoff?.retryAt) state.issue += " Retrying shortly.";

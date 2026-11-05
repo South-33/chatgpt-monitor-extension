@@ -63,7 +63,6 @@ async function scenario({ error, baseline = 0, interruption = false }) {
     waitForSettledAssistantResponse: async () => null,
     settleBlockingUiAfterGeneration: async () => false,
     resolveMaterializationPermission: async () => false,
-    ensureModelPreferences: async () => true,
     recoverConversationLoad: async () => false,
     recoverExtendedThinking: async () => false,
     resetExtendedThinking: () => {},

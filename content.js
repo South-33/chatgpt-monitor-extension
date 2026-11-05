@@ -28,12 +28,6 @@ let cachedWorkedSeconds = 0;
 let workedScanUrl = location.href;
 let settledResponseKey = "";
 let settledResponseUrl = location.href;
-// Keep model verification and retry state within this content-script instance.
-// These values must exist before the first scan; an undeclared optional-chain
-// target throws a ReferenceError and prevents monitoring from advancing.
-let verifiedModelSelection = null;
-let modelPreferenceFailure = "";
-let modelPreferenceRetryAt = 0;
 let lastPromptFailureReason = 'unknown';
 const approvalDiagnostics = new WeakMap();
 let configuredPluginName = "DevSpace";
@@ -1110,9 +1104,7 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     lastPromptFailureReason = 'send-conditions-changed';
     return false;
   }
-  // A fresh composer can change models as the draft loads. Verify once the
-  // Send button exists, since the closed picker only shows reasoning effort.
-  const modelReady = !requirePlugin || await ensureModelPreferences(ownership, true);
+  const modelReady = await applyModelPreferences(ownership, cyclePrompt);
   if (stopped || !sameConversation(expectedUrl) || findComposer() !== composer
       || isGenerating() || hasBlockingUi() || composerText(composer) !== draft) {
     lastPromptFailureReason = 'send-conditions-changed';
@@ -1125,20 +1117,13 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     lastPromptFailureReason = 'plugin-selection-lost';
     return false;
   }
-  if (!modelReady || (requirePlugin && !handoffModelReady(ownership))) {
-    lastPromptFailureReason = modelReady ? 'model-unconfirmed' : 'model-preference';
+  if (!modelReady) {
+    if (lastPromptFailureReason === 'unknown') lastPromptFailureReason = 'model-preference';
     return false;
   }
   const button = findSendButton(composer);
   if (sendButtonReady(button)) {
-    const verification = requirePlugin && ownership.enforceModelPreferences !== false
-      && (ownership.preferredModel || ownership.preferredReasoning) && {
-        type: "modelPreferenceResult", ok: true, verifiedForSend: true,
-        model: ownership.preferredModel, reasoning: ownership.preferredReasoning,
-        ...composerModelEvidence(verifiedModelSelection?.trigger), changed: verifiedModelSelection?.changed,
-      };
     HTMLButtonElement.prototype.click.call(button);
-    if (verification) void sendRuntime(verification);
     if (await waitFor(submitted, 10000)) return true;
   }
   lastPromptFailureReason = 'send-not-confirmed';
@@ -1185,11 +1170,6 @@ function modelLabel(item) {
     .toLowerCase().replace(/[\s\u2010-\u2015-]+/g, '');
 }
 
-function selectedModel(menu, name) {
-  return pickerItems(menu).some(item => modelLabel(item) === modelLabel({ textContent: name })
-    && (item.getAttribute('aria-checked') === 'true' || item.getAttribute('data-model-selected') === 'true'));
-}
-
 function selectedReasoning(trigger, menu) {
   const slider = pickerItems(menu, '[role="slider"], input[type="range"], [data-reasoning-slider]').at(-1);
   const effortText = slider?.getAttribute('aria-valuetext') || '';
@@ -1206,52 +1186,13 @@ function selectedReasoning(trigger, menu) {
   return explicit || '';
 }
 
-function composerModelEvidence(trigger) {
-  const badge = normalizedControlText(trigger?.innerText || trigger?.textContent || '')
-    .replace(/^Thinking effort\s*/i, '');
-  const label = badge.replace(/(?:^|\s+)(?:instant|medium|high)$/i, '');
-  const observedModel = label === '5.6' ? 'GPT-5.6 Sol' : label === '5.5' ? 'GPT-5.5'
-    : label || (/^(?:instant|medium|high)$/i.test(badge) ? 'GPT-6' : '');
-  return { observedModel, observedReasoning: selectedReasoning(trigger, null) };
-}
-
-function closedModelMatches(trigger, model) {
-  return modelLabel({ textContent: composerModelEvidence(trigger).observedModel }) === modelLabel({ textContent: model });
-}
-
-function closedReasoningMatches(trigger, reasoning) {
-  const explicit = trigger?.getAttribute('data-selected-reasoning-effort')?.toLowerCase();
-  return selectedReasoning(trigger, null) === reasoning && (!explicit || explicit === reasoning);
-}
-
-function handoffModelReady(preferences) {
+async function applyModelPreferences(preferences, cyclePrompt) {
   if (preferences.enforceModelPreferences === false) return true;
-  const { preferredModel: model, preferredReasoning: reasoning } = preferences;
-  if (!model && !reasoning) return true;
-  const trigger = modelPickerTrigger();
-  return Boolean(trigger && verifiedModelSelection?.trigger === trigger && !controlMenuOpen(trigger)
-    && (!model || closedModelMatches(trigger, model))
-    && (!reasoning || closedReasoningMatches(trigger, reasoning)));
-}
-
-async function ensureModelPreferences(preferences, force = false, cyclePrompt = false) {
-  if (preferences.enforceModelPreferences === false) {
-    // Switching the checkbox back on must re-verify what happened meanwhile.
-    verifiedModelSelection = null;
-    modelPreferenceFailure = '';
-    modelPreferenceRetryAt = 0;
-    return true;
-  }
   const model = preferences.preferredModel || '';
   const reasoning = preferences.preferredReasoning || '';
   if (!model && !reasoning) return true;
   const expectedUrl = location.href;
   const trigger = modelPickerTrigger();
-  const signature = trigger ? `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` : '';
-  const key = `${location.href}|${model}|${reasoning}`;
-  if (!force && verifiedModelSelection?.trigger === trigger && verifiedModelSelection.key === key
-      && verifiedModelSelection.signature === signature && !controlMenuOpen(trigger)) return true;
-  if (modelPreferenceRetryAt > Date.now() && modelPreferenceFailure === key) return false;
 
   // Check ownership again before every click. A pause, approval, or new response
   // can appear while a menu is opening; none should be interrupted by this flow.
@@ -1262,114 +1203,75 @@ async function ensureModelPreferences(preferences, force = false, cyclePrompt = 
       && (current.preferredModel || '') === model && (current.preferredReasoning || '') === reasoning;
   };
   if (!await canAct()) return false;
-  if (trigger && !controlMenuOpen(trigger)
-      && [...document.querySelectorAll('[role="menu"], [role="dialog"]')].some(visible)) return false;
+  if (trigger && (controlMenuOpen(trigger)
+      || [...document.querySelectorAll('[role="menu"], [role="dialog"]')].some(visible))) return false;
   let opened = false;
   let success = false;
-  let changed = false;
   let reason = 'picker-unavailable';
   try {
     if (!trigger) return false;
-    if (!controlMenuOpen(trigger)) {
-      clickControl(trigger, { pointerFirst: true });
-      opened = true;
-    }
-    if (!await waitFor(() => Boolean(pickerMenu(trigger)), 3000)) return false;
-    // The portal can mount before the active view's controls. Let the actual
-    // choices become ready before treating a loading menu as a failed picker.
+    clickControl(trigger, { pointerFirst: true });
+    opened = true;
     if (!await waitFor(() => pickerItems(pickerMenu(trigger)).length > 0, 3000)) return false;
     let menu = pickerMenu(trigger);
     if (model) {
-      let options = pickerItems(menu);
-      let desired = options.find(item => modelLabel(item) === modelLabel({ textContent: model }));
+      const options = pickerItems(menu);
+      const matchesModel = item => modelLabel(item) === modelLabel({ textContent: model });
+      let desired = options.find(matchesModel);
       if (!desired) {
         const toggle = options.find(item => /^(?:select|choose) model$/i.test(item.getAttribute('aria-label') || ''));
         if (!toggle || !await canAct()) return false;
         clickControl(toggle);
         await waitFor(() => pickerItems(pickerMenu(trigger)).some(item => item.getAttribute('role') === 'menuitemradio'), 2000);
         menu = pickerMenu(trigger);
-        desired = pickerItems(menu).find(item => modelLabel(item) === modelLabel({ textContent: model }));
+        desired = pickerItems(menu).find(matchesModel);
       }
       reason = 'model-unavailable';
       if (!desired || !await canAct()) return false;
-      if (!selectedModel(menu, model)) {
-        clickControl(desired);
-        changed = true;
-        // Current ChatGPT returns to the power view, retaining the checked list
-        // in an inert panel. Read that authoritative state to verify selection.
-        if (!await waitFor(() => [...(pickerMenu(trigger)?.querySelectorAll('[aria-checked="true"], [data-model-selected="true"]') || [])]
-          .some(item => modelLabel(item) === modelLabel({ textContent: model })), 3000)) return false;
-      }
+      clickControl(desired);
+      // Selecting a model returns to the power view.
+      if (!await waitFor(() => !controlMenuOpen(trigger)
+          || !pickerItems(pickerMenu(trigger)).some(item => item.getAttribute('role') === 'menuitemradio'), 2000)) return false;
     }
     if (reasoning && selectedReasoning(trigger, pickerMenu(trigger)) !== reasoning) {
-      menu = pickerMenu(trigger);
-      // A checked model in the advanced view returns to the simple power view.
-      let power = pickerItems(menu).find(item => item.getAttribute('role') === 'slider'
-        || item.matches?.('input[type="range"]')
-        || /^(?:power|reasoning|thinking effort)$/i.test(item.getAttribute('aria-label') || ''));
-      if (!power) {
-        const selected = pickerItems(menu).find(item => item.getAttribute('aria-checked') === 'true');
-        if (selected && await canAct()) {
-          clickControl(selected);
-          await waitFor(() => pickerItems(pickerMenu(trigger)).some(item => item.hasAttribute('data-reasoning-slider')
-            || item.getAttribute('role') === 'slider' || item.matches?.('input[type="range"]')), 2000);
-          power = pickerItems(pickerMenu(trigger)).find(item => item.hasAttribute('data-reasoning-slider')
-            || item.getAttribute('role') === 'slider' || item.matches?.('input[type="range"]'));
-        }
-      }
       reason = 'reasoning-unavailable';
-      if (!power) return false;
-      // Use the menu's documented keyboard control, then verify its actual
-      // effort after each step. Never map guessed slider coordinates to levels.
+      if (!controlMenuOpen(trigger)) {
+        if (!await canAct()) return false;
+        clickControl(trigger, { pointerFirst: true });
+      }
+      const powerControl = () => pickerItems(pickerMenu(trigger)).find(item => item.hasAttribute('data-reasoning-slider')
+        || item.getAttribute('role') === 'slider' || item.matches?.('input[type="range"]'));
+      if (!await waitFor(powerControl, 2000)) return false;
+      // The picker uses relative keyboard controls. Read the current level
+      // to choose which way to move.
       const levels = ['instant', 'medium', 'high'];
       for (let step = 0; step < 4 && selectedReasoning(trigger, pickerMenu(trigger)) !== reasoning; step++) {
         const current = levels.indexOf(selectedReasoning(trigger, pickerMenu(trigger)));
         const target = levels.indexOf(reasoning);
         if (current < 0 || target < 0 || !await canAct()) return false;
+        const power = powerControl();
+        if (!power) return false;
         const before = selectedReasoning(trigger, pickerMenu(trigger));
         const key = current < target ? 'ArrowRight' : 'ArrowLeft';
         power.focus({ preventScroll: true });
         power.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
         power.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, bubbles: true }));
-        changed = true;
         if (!await waitFor(() => selectedReasoning(trigger, pickerMenu(trigger)) !== before, 1500)) return false;
       }
       if (selectedReasoning(trigger, pickerMenu(trigger)) !== reasoning) return false;
     }
-    success = await canAct();
+    success = true;
   } finally {
     if (opened && controlMenuOpen(trigger)) {
       const menu = pickerMenu(trigger);
       menu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
       if (!await waitFor(() => !controlMenuOpen(trigger), 1000)) success = false;
     }
-    if (success && (reasoning || (force && model))) {
-      reason = force && model ? 'model-unconfirmed' : 'reasoning-unavailable';
-      const committed = () => modelPickerTrigger() === trigger && !controlMenuOpen(trigger)
-        && (!force || !model || closedModelMatches(trigger, model))
-        && (!reasoning || closedReasoningMatches(trigger, reasoning));
-      let matched = false;
-      success = await waitFor(() => {
-        const ready = committed();
-        const stable = matched && ready;
-        matched = ready;
-        return stable;
-      }, 1500) && await canAct() && committed();
-      if (!success && force && model && reasoning && modelPickerTrigger() === trigger
-          && closedModelMatches(trigger, model)) reason = 'reasoning-unavailable';
-    }
-    if (success) {
-      verifiedModelSelection = { trigger, key, changed, signature: `${trigger.innerText}|${trigger.getAttribute('data-selected-reasoning-effort')}` };
-      modelPreferenceFailure = '';
-      modelPreferenceRetryAt = 0;
-      if (!force) void sendRuntime({ type: 'modelPreferenceResult', ok: true, changed, model, reasoning,
-        ...composerModelEvidence(trigger) });
-    } else if (await canAct()) {
-      modelPreferenceRetryAt = Date.now() + 30000;
-      const repeated = modelPreferenceFailure === key;
-      modelPreferenceFailure = key;
-      await sendRuntime({ type: 'modelPreferenceResult', ok: false, reason, repeated,
-        model, reasoning, ...composerModelEvidence(modelPickerTrigger()) });
+    const allowed = await canAct();
+    success = success && allowed;
+    if (allowed) {
+      if (!success) lastPromptFailureReason = reason;
+      void sendRuntime({ type: 'modelPreferenceResult', ok: success, reason, model, reasoning });
     }
   }
   return success;
@@ -1394,15 +1296,6 @@ async function sendPrompt(text, requirePlugin = false, cyclePrompt = false) {
   }
   if (hasBlockingUi() || !sameConversation(expectedUrl)) {
     lastPromptFailureReason = 'composer-blocked';
-    return false;
-  }
-  if (!requirePlugin && !await ensureModelPreferences(ownership, false, cyclePrompt)) {
-    lastPromptFailureReason = 'model-preference';
-    return false;
-  }
-
-  if (!sameConversation(expectedUrl)) {
-    lastPromptFailureReason = 'conversation-changed';
     return false;
   }
   if (requirePlugin && !pluginSelected()) {
@@ -1567,7 +1460,7 @@ async function handleAction(result) {
   }
 }
 
-async function deliverPendingHandoff(preferences) {
+async function deliverPendingHandoff() {
   if (hasBlockingUi()) return;
   const expectedUrl = location.href;
   const result = await sendRuntime({ type: "getPendingHandoff" });
@@ -1582,15 +1475,13 @@ async function deliverPendingHandoff(preferences) {
     return;
   }
   if (!pluginSelected()) {
-    const needsPicker = preferences.enforceModelPreferences !== false
-      && (preferences.preferredModel || preferences.preferredReasoning);
     let previousComposer = null;
     const ready = await waitFor(() => {
       const composer = findComposer();
       const stable = composer === previousComposer;
       previousComposer = composer;
       return sameConversation(expectedUrl) && visible(composer) && stable
-        && (!needsPicker || modelPickerTrigger()) && !isGenerating() && !hasBlockingUi();
+        && !isGenerating() && !hasBlockingUi();
     }, 10000);
     if (!sameConversation(expectedUrl)) return;
     let reason;
@@ -1677,7 +1568,7 @@ async function scan() {
     if (!isConversationPage() || tabRole.pendingDelivery) {
       resetExtendedThinking("monitor-reset");
       if (isGenerating()) return;
-      await deliverPendingHandoff(tabRole);
+      await deliverPendingHandoff();
       return;
     }
 
@@ -1756,12 +1647,7 @@ async function scan() {
     // background or submitting any prompt.
     if (await resolveMaterializationPermission()) return;
 
-    // Let completed/blocked replies reach the background and pause the task
-    // before reconciling model choices. Active generation is never interrupted.
-    if (!generating && !recoveryKey && !tabRole.waitingForTerminalReview
-        && !terminalMarker(latestResponseText) && !await ensureModelPreferences(tabRole)) return;
-
-    // DOM reads and model-menu waits can span a navigation. A completed reply
+    // DOM reads can span a navigation. A completed reply
     // from the old chat must never become an action in the new conversation.
     if (!sameConversation(scannedUrl)) return;
 
