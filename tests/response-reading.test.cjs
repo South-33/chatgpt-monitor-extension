@@ -5,7 +5,9 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'conte
 let nodes = [];
 const currentTurn = {
   hasAttribute: name => name === 'data-turn-key',
-  querySelectorAll: () => nodes,
+  querySelectorAll: selector => selector.includes('[data-chatgpt-selection-message-id]')
+    ? nodes.filter(node => node.answer)
+    : nodes,
 };
 const ctx = {
   document: { querySelectorAll: () => [currentTurn] },
@@ -13,12 +15,17 @@ const ctx = {
 };
 vm.runInNewContext(source.slice(source.indexOf('function responseFromTurn'), source.indexOf('function latestUserText')), ctx);
 for (const text of ['Everything is still stable. More work remains.', 'All work is verified.\nTASK_FINISHED']) {
-  nodes = [{ innerText: text, contains: () => false }];
+  nodes = [
+    { innerText: 'Ran a tool', contains: () => false },
+    { innerText: text, contains: () => false, answer: true },
+  ];
   assert.equal(ctx.latestAssistantResponse().text, text, 'read final answer without an English heading');
   assert.equal(ctx.latestAssistantResponse().substantive, true);
 }
 nodes = [];
 assert.equal(ctx.latestAssistantResponse().text, '', 'a new user-only turn cannot reuse an older answer');
+nodes = [{ innerText: 'Activity summary\nTASK_FINISHED', contains: () => false }];
+assert.equal(ctx.latestAssistantResponse().text, '', 'activity Markdown cannot stand in for a final answer');
 const review = 'Before accepting TASK_BLOCKED, check the original blocker.';
 const collapsedBubble = {
   innerText: `${review}\n…\nShow more`,

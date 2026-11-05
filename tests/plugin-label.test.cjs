@@ -90,17 +90,28 @@ const recoveryStart = source.indexOf("function streamRecoveryFailure");
 const recoveryEnd = source.indexOf("function consecutiveBlockedResponses", recoveryStart);
 assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, "stream recovery helper not found");
 const failedTurn = {
+  hasAttribute(name) { return name === "data-turn-key"; },
   getAttribute(name) { return name === "data-turn-key" ? "failed-turn" : null; },
-  querySelectorAll() { return [{ innerText: "ChatGPT stream recovery polling timed out\nRetry" }]; },
+  querySelectorAll(selector) {
+    return selector === '[role="alert"]' ? [{ innerText: "ChatGPT stream recovery polling timed out\nRetry" }] : [];
+  },
 };
 const recoveryContext = {
   document: { querySelectorAll() { return [failedTurn]; } },
   isGenerating() { return false; },
 };
 vm.runInNewContext(`${source.slice(recoveryStart, recoveryEnd)}; recovery = streamRecoveryFailure;`, recoveryContext);
-assert.equal(recoveryContext.recovery(), "failed-turn");
+assert.equal(recoveryContext.recovery().key, "failed-turn");
 recoveryContext.isGenerating = () => true;
-assert.equal(recoveryContext.recovery(), "", "an active response must not be recovered");
+assert.equal(recoveryContext.recovery(), null, "an active response must not be recovered");
+recoveryContext.isGenerating = () => false;
+recoveryContext.visible = () => true;
+recoveryContext.normalizedControlText = text => text.trim();
+failedTurn.querySelectorAll = selector => selector === '[role="status"]'
+  ? [{ innerText: "Connection interrupted. Waiting for the complete answer" }] : [];
+const newerTurn = { hasAttribute: () => true, querySelectorAll: () => [] };
+recoveryContext.document.querySelectorAll = () => [failedTurn, newerTurn];
+assert.equal(recoveryContext.recovery(), null, "a banner on an older turn cannot interrupt the current one");
 
 const incompleteStart = source.indexOf("function incompleteTurnKey");
 assert.ok(incompleteStart > recoveryStart && incompleteStart < recoveryEnd);

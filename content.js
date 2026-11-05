@@ -661,7 +661,9 @@ function responseFromTurn(turn) {
   if (!turn) return { text: "", substantive: false, turn: null };
 
   if (turn.hasAttribute('data-turn-key')) {
-    const rendered = [...turn.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]')]
+    const rendered = [...turn.querySelectorAll(
+      '[data-chatgpt-selection-message-id] [data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]',
+    )]
       .filter((node, index, all) => !all.some((other, otherIndex) => otherIndex !== index && other.contains(node)))
       .map((node) => (node.innerText || node.textContent || "").trim())
       .filter(Boolean)
@@ -731,12 +733,21 @@ function latestUserText() {
 function streamRecoveryFailure() {
   const turn = [...document.querySelectorAll('[data-turn-key], [data-testid^="conversation-turn"]')].at(-1)
     || document.querySelector('main');
-  if (!turn || isGenerating()) return "";
-  const alert = [...turn.querySelectorAll('[role="alert"]')].find((node) =>
+  if (!turn || isGenerating()) return null;
+  const interrupted = turn.hasAttribute('data-turn-key')
+    && [...turn.querySelectorAll('[role="status"]')].some((node) =>
+      visible(node) && /^connection interrupted[.!]? waiting for the complete answer[.!]?$/i
+        .test(normalizedControlText(node.innerText || node.textContent)),
+    );
+  const alert = !interrupted && [...turn.querySelectorAll('[role="alert"]')].some((node) =>
     /stream recovery|resume stream unavailable|something went wrong|network error|error.*(?:generating|stream)|unable to (?:load|resume)/i.test(node.innerText || node.textContent || ""),
   );
-  return alert ? turn.getAttribute('data-turn-key') || turn.getAttribute('data-testid')
-    || `interrupted:${fingerprint(latestUserText() || turn.innerText || turn.textContent || "")}` : "";
+  if (!interrupted && !alert) return null;
+  return {
+    key: turn.getAttribute('data-turn-key') || turn.getAttribute('data-testid')
+      || `interrupted:${fingerprint(latestUserText() || turn.innerText || turn.textContent || "")}`,
+    reason: interrupted ? "connection-interrupted" : "stream-error",
+  };
 }
 
 function incompleteTurnKey() {
@@ -1646,7 +1657,6 @@ async function scan() {
     }
 
     const generating = isGenerating();
-    let recoveryKey = generating ? "" : streamRecoveryFailure();
     const generationEnded = lastScanGenerating === true && !generating;
     const generationStarted = lastScanGenerating !== true && generating;
     lastScanGenerating = generating;
@@ -1680,17 +1690,21 @@ async function scan() {
     let latestResponseText = "";
     let responseKey = "";
     let latestResponseIsSubstantive = false;
+    let recoveryKey = "";
+    let recoveryReason = "";
 
     if (!generating) {
+      const failure = streamRecoveryFailure();
       const completed = captureResponse();
-      // A stale error banner must not hide a readable final reply. Let the
-      // normal settling check validate it before deciding recovery is needed.
-      if (completed.substantive && completed.text) recoveryKey = "";
-      if (terminalMarker(completed.text)) {
+      if (failure?.reason === "connection-interrupted" || (failure && !completed.substantive)) {
+        // Give ChatGPT time to finish reconnecting after the Stop control disappears.
+        if (Date.now() - idleSince < 5000) return;
+        recoveryKey = failure.key;
+        recoveryReason = failure.reason;
+      } else if (terminalMarker(completed.text)) {
         latestResponseText = completed.text;
         latestResponseIsSubstantive = completed.substantive;
         responseKey = completed.responseKey;
-        recoveryKey = "";
       }
       // Read the latest rendered assistant turn directly. Clipboard focus and
       // ChatGPT's Copy response control are deliberately outside this flow.
@@ -1707,6 +1721,7 @@ async function scan() {
           responseKey = latest.responseKey;
         } else {
           recoveryKey = incompleteTurnKey();
+          if (recoveryKey) recoveryReason = "missing-final-answer";
         }
       }
     }
@@ -1718,7 +1733,7 @@ async function scan() {
 
     // Let completed/blocked replies reach the background and pause the task
     // before reconciling model choices. Active generation is never interrupted.
-    if (!generating && !tabRole.waitingForTerminalReview
+    if (!generating && !recoveryKey && !tabRole.waitingForTerminalReview
         && !terminalMarker(latestResponseText) && !await ensureModelPreferences(tabRole)) return;
 
     // DOM reads and model-menu waits can span a navigation. A completed reply
@@ -1733,6 +1748,7 @@ async function scan() {
       workedSeconds: workedSeconds(generationEnded),
       responseKey,
       recoveryKey,
+      recoveryReason,
       latestResponseText,
       latestResponseIsSubstantive,
       latestUserText: !generating || tabRole.checkContinueStage ? latestUserText() : "",

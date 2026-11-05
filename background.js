@@ -163,6 +163,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "action-result",
   "prompt-submission-failed",
   "recovery-check-completed",
+  "response-recovery",
   "logging-configured",
   "handoff-incomplete",
   "handoff-captured",
@@ -229,6 +230,7 @@ function recordDiagnostic(event, details = {}) {
       ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
       "unreadable-check-in",
+      "connection-interrupted", "stream-error", "missing-final-answer",
       "review-reply-unconfirmed",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
@@ -1728,10 +1730,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // composer is idle, so recover once for this turn even without an error card.
     if (message.recoveryKey && message.recoveryKey !== state.lastRecoveryKey
         && state.taskStatus === "ongoing" && !message.latestResponseText) {
+      if (message.composerEmpty === false) { sendResponse({}); return; }
       if (state.phase === "waiting-for-terminal-review") {
         state.paused = true;
         state.phase = "paused";
-        state.issue = "The reconsideration reply could not be read. Check ChatGPT, then Resume if more work is possible.";
+        state.resumeContinuePending = true;
+        state.issue = message.recoveryReason === "connection-interrupted"
+          ? "ChatGPT lost its connection during the final review. Resume if work should continue."
+          : "The reconsideration reply could not be read. Check ChatGPT, then Resume if more work is possible.";
+        await recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
         await persistRuntime();
         sendResponse({});
         return;
@@ -1745,6 +1752,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.actionPrompt = "";
         state.actionStartedAt = null;
         state.retryAt = null;
+        await recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
         await recordDiagnostic("pause-changed", { tabId, reason: "unreadable-check-in", phase: "paused" });
         await persistRuntime();
         sendResponse({});
@@ -1764,11 +1772,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ? (state.recoveryStreak || 0) + 1 : 1;
       state.lastRecoveryAt = Date.now();
       state.lastRecoveryKey = message.recoveryKey;
-      const result = state.recoveryCheckPrompt
-        ? requestRecoveryCheck(state, "stream-recovery")
-        : handoffInProgress(state)
-        ? requestHandoff(state)
-        : requestAutomaticFollowUp(state, "stream-recovery");
+      void recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
+      const result = handoffInProgress(state)
+        ? requestHandoff(state, handoffPrompt(), "stream-recovery")
+        : message.recoveryReason === "connection-interrupted" && !thresholdReached(state)
+          ? requestRecoveryCheck(state, "stream-recovery")
+          : requestAutomaticFollowUp(state, "stream-recovery");
       await persistRuntime();
       sendResponse(result);
       return;
