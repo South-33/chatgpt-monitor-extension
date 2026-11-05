@@ -32,7 +32,10 @@ const AUTOMATION_NOTE =
   "This is an automated continuation message and may be sent repeatedly. Continue the original user task. Treat the selected prompt below as contextual guidance for the next useful step: follow it when relevant to the current state, but do not restart settled work, create a new goal, or invent work just because this message repeated.";
 
 const HOUSEKEEPING_GUIDANCE =
-  "Leave the area you worked in clean and current so the next person or agent can find the right files and resume quickly. Give related work one clear home. Update the existing source of truth, combine duplicates, and retire clearly obsolete code, tests, docs, and temporary output. Prefer fewer files and less code while preserving useful checks, unique evidence, and unrelated work. Keep active material easy to find and put retained history in its existing home. Verify the paths and behavior you changed.";
+  "Keep the active work clean and current as you pursue the goal. Use your judgment about which clutter makes the next useful step harder. Give related work one clear home, keep the source of truth current, and consolidate or retire obsolete material where it helps. Preserve useful checks, unique evidence, and unrelated work.";
+
+const GIT_GUIDANCE =
+  "If the task calls for commits, group related changes into one meaningful checkpoint per coherent decision. Let work accumulate while a decision is still in progress. Use the project's style. Write a title that explains why the change matters and a body that records the reason, evidence, and what a reviewer may need to rerun.";
 
 const FINISHED_REVIEW_PROMPT =
   `Before accepting TASK_FINISHED, verify the original goal and acceptance criteria. Fix any clear omission.\n\n${HOUSEKEEPING_GUIDANCE}\n\n${CONTINUE_TERMINAL_NOTE} Otherwise, continue the original task. This is the only completion review for this stop attempt.`;
@@ -74,13 +77,13 @@ function continuationPrompt(text, preamble = AUTOMATION_NOTE) {
 }
 
 const WORKFLOW_REVIEW_PROMPT = continuationPrompt(
-  "Review the recent tool calls. Find the recurring bottleneck that costs the agent the most time, context, or rework. Look for slow commands, repeated calls, noisy output, and missing evidence that makes decisions harder.\n\nChange the tools or how the agent uses them. Remove or batch calls, reuse work, return a compact overview with details on demand, or make failures easier to diagnose. Build a custom tool or replace part of the harness when the remaining work justifies it. Prioritize changes that make the agent faster or more reliable.\n\nRun the old and new approaches on a representative case. Compare elapsed time, tool calls, or output size, including setup and interpretation. Check that the new approach preserves the evidence and accuracy the task needs. Use the improvement in the next real step toward the original goal.",
-  "This is an automated check-in. Use your judgment. Improve the agent harness, meaning the tools, scripts, and feedback the model uses to do the work, when the change will materially help the remaining task. Otherwise, continue the original task.",
+  "Look at the remaining goal and ask what would make the agent materially faster, more reliable, or better informed. Use recent friction as evidence. Improve the tools, scripts, or feedback the agent relies on if that is the highest-value move. Give unconventional ideas a real shot, including building a tool or replacing the current approach if it would work better. Try the idea on real work, judge it by the quality of the result and the effort it takes, then keep working toward the goal.",
+  "This is an automated check-in. Use your own judgment. Improve the agent harness when it will make a meaningful difference to the task. Otherwise, take the most useful next step.",
 );
 
 const HOUSEKEEPING_PROMPT = continuationPrompt(
-  `${HOUSEKEEPING_GUIDANCE} Keep the pass focused on changes that will help the remaining work. Then continue toward the original goal.`,
-  "This is an automated continuation. Use your judgment about what is worth tidying up now.",
+  `${HOUSEKEEPING_GUIDANCE} Keep working toward the original goal.\n\n${GIT_GUIDANCE}`,
+  "This is an automated continuation. Use your own judgment about what is worth tidying up while you work.",
 );
 
 const ON_DEMAND_PROMPTS = new Map([
