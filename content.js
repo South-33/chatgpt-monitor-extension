@@ -728,6 +728,17 @@ function streamRecoveryFailure() {
   const turn = [...document.querySelectorAll('[data-turn-key], [data-testid^="conversation-turn"]')].at(-1)
     || document.querySelector('main');
   if (!turn || isGenerating()) return null;
+  const deliveryError = [...turn.querySelectorAll('aside[role="alert"]')].find(node =>
+    visible(node) && /^message delivery timed out[.!]?\s+please try again[.!]?(?:\s+retry)?$/i
+      .test(normalizedControlText(node.innerText || node.textContent)),
+  );
+  if (deliveryError) {
+    const retryButton = [...deliveryError.querySelectorAll("button")].find(button =>
+      visible(button) && /^retry$/i.test(buttonLabel(button)),
+    );
+    const identity = latestUserText() || turn.getAttribute('data-turn-key') || turn.getAttribute('data-testid');
+    if (identity) return { key: `delivery:${fingerprint(identity)}`, reason: "message-delivery-timeout", retryButton };
+  }
   const interrupted = turn.hasAttribute('data-turn-key')
     && [...turn.querySelectorAll('[role="status"]')].some((node) =>
       visible(node) && /^connection interrupted[.!]? waiting for the complete answer[.!]?$/i
@@ -1432,6 +1443,12 @@ async function openNewChat() {
 
 async function handleAction(result) {
   if (hasBlockingUi()) return;
+  if (result.action === "retryDelivery") {
+    const failure = streamRecoveryFailure();
+    if (failure?.key === result.recoveryKey && controlReady(failure.retryButton)
+        && !composerText(findComposer())) HTMLElement.prototype.click.call(failure.retryButton);
+    return;
+  }
   if (["sendHandoff", "sendContinue", "sendTerminalReview"].includes(result.action)) {
     const ok = await sendPrompt(result.prompt);
     await sendRuntime({
@@ -1608,15 +1625,17 @@ async function scan() {
     let latestResponseIsSubstantive = false;
     let recoveryKey = "";
     let recoveryReason = "";
+    let deliveryRetryAvailable = false;
 
     if (!generating) {
       const failure = streamRecoveryFailure();
       const completed = captureResponse();
-      if (failure?.reason === "connection-interrupted" || (failure && !completed.substantive)) {
+      if (failure && (failure.reason !== "stream-error" || !completed.substantive)) {
         // Give ChatGPT time to finish reconnecting after the Stop control disappears.
         if (Date.now() - idleSince < 5000) return;
         recoveryKey = failure.key;
         recoveryReason = failure.reason;
+        deliveryRetryAvailable = Boolean(failure.retryButton);
       } else if (terminalMarker(completed.text)) {
         latestResponseText = completed.text;
         latestResponseIsSubstantive = completed.substantive;
@@ -1659,6 +1678,7 @@ async function scan() {
       responseKey,
       recoveryKey,
       recoveryReason,
+      deliveryRetryAvailable,
       latestResponseText,
       latestResponseIsSubstantive,
       latestUserText: generating ? "" : latestUserText(),
