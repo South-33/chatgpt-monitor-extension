@@ -34,7 +34,9 @@ function editor(initialDraft = '') {
 
 const prompt = 'Another agent worked on this original task. Continue using the verified evidence.';
 
-async function scenario(initialDraft = '', pluginPresent = true, { modelOk = true, modelKeepsPlugin = true, requirePlugin = true } = {}) {
+async function scenario(initialDraft = '', pluginPresent = true, {
+  modelOk = true, modelKeepsPlugin = true, requirePlugin = true, modelSettles = true,
+} = {}) {
   const composer = editor(initialDraft);
   let inserted = 0;
   let sendAttempts = 0;
@@ -72,6 +74,11 @@ async function scenario(initialDraft = '', pluginPresent = true, { modelOk = tru
       verifications.push(preferences.preferredModel);
       if (!modelKeepsPlugin) pluginPresent = false;
       return modelOk;
+    },
+    waitForHandoffModel: async current => {
+      assert.equal(current, composer);
+      assert.equal(sendAttempts, 0);
+      return modelSettles;
     },
     pluginSelected: () => pluginPresent,
     HTMLButtonElement: class { click() { sendAttempts++; } },
@@ -155,6 +162,9 @@ async function deliveryScenario() {
   const modelFailure = await scenario('', true, { modelOk: false });
   assert.equal(modelFailure.context.lastPromptFailureReason, 'model-preference');
   assert.equal(modelFailure.delivered, false, 'handoff must not send when preferred model verification fails');
+  const modelReset = await scenario('', true, { modelSettles: false });
+  assert.equal(modelReset.sendAttempts, 0);
+  assert.equal(modelReset.context.lastPromptFailureReason, 'model-unconfirmed');
 
   const pluginLost = await scenario('', true, { modelKeepsPlugin: false });
   assert.equal(pluginLost.context.lastPromptFailureReason, 'plugin-selection-lost');

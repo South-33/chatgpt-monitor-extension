@@ -1113,6 +1113,10 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     return false;
   }
   const modelReady = await applyModelPreferences(ownership, cyclePrompt);
+  const needsHandoffModel = requirePlugin && ownership.enforceModelPreferences !== false
+    && (ownership.preferredModel || ownership.preferredReasoning);
+  const modelSettled = modelReady && (!needsHandoffModel
+    || await waitForHandoffModel(composer, expectedUrl, ownership));
   if (stopped || !sameConversation(expectedUrl) || findComposer() !== composer
       || isGenerating() || hasBlockingUi() || composerText(composer) !== draft) {
     lastPromptFailureReason = 'send-conditions-changed';
@@ -1127,6 +1131,10 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
   }
   if (!modelReady) {
     if (lastPromptFailureReason === 'unknown') lastPromptFailureReason = 'model-preference';
+    return false;
+  }
+  if (!modelSettled) {
+    lastPromptFailureReason = 'model-unconfirmed';
     return false;
   }
   const button = findSendButton(composer);
@@ -1192,6 +1200,36 @@ function selectedReasoning(trigger, menu) {
   const badge = compact.match(/\b(instant|medium|high)$/i);
   if (badge) return badge[1].toLowerCase();
   return explicit || '';
+}
+
+function readComposerModel(trigger) {
+  const badge = normalizedControlText(trigger?.innerText || trigger?.textContent || '')
+    .replace(/^Thinking effort\s*/i, '');
+  const label = badge.replace(/(?:^|\s+)(?:instant|medium|high)$/i, '');
+  let model = label;
+  if (label === '5.6') model = 'GPT-5.6 Sol';
+  else if (label === '5.5') model = 'GPT-5.5';
+  else if (/^(?:instant|medium|high)$/i.test(badge)) model = 'GPT-6';
+  return { model, reasoning: selectedReasoning(trigger, null) };
+}
+
+async function waitForHandoffModel(composer, url, { preferredModel: model, preferredReasoning: reasoning }) {
+  let previous = null;
+  let observed = {};
+  const ok = await waitFor(() => {
+    const trigger = sameConversation(url) && findComposer() === composer ? modelPickerTrigger() : null;
+    observed = readComposerModel(trigger);
+    const effort = trigger?.getAttribute('data-selected-reasoning-effort');
+    const ready = trigger && !controlMenuOpen(trigger)
+      && (!model || modelLabel({ textContent: observed.model }) === modelLabel({ textContent: model }))
+      && (!reasoning || (observed.reasoning === reasoning && (!effort || effort.toLowerCase() === reasoning)));
+    const settled = ready && trigger === previous;
+    previous = ready ? trigger : null;
+    return settled;
+  }, 2000);
+  void sendRuntime({ type: 'modelPreferenceResult', settled: true, ok, model, reasoning,
+    reason: 'model-unconfirmed', observedModel: observed.model, observedReasoning: observed.reasoning });
+  return ok;
 }
 
 async function applyModelPreferences(preferences, cyclePrompt) {

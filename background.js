@@ -137,7 +137,7 @@ const SENDING_PHASES = new Set(["sending-continue", "sending-handoff", "sending-
 const MAX_DIAGNOSTIC_EVENTS = 500;
 const DIAGNOSTIC_EVENTS = new Set([
   "approval_detected", "approval_resolved", "approval_pending",
-  "model-selection-applied", "model-selection-failed",
+  "model-selection-applied", "model-selection-settled", "model-selection-failed",
   "monitoring-changed",
   "pause-changed",
   "watchdog-detected",
@@ -217,7 +217,7 @@ function recordDiagnostic(event, details = {}) {
       "unreadable-check-in",
       "connection-interrupted", "stream-error", "missing-final-answer", "message-delivery-timeout",
       "review-reply-unconfirmed",
-      "picker-unavailable", "model-unavailable", "reasoning-unavailable",
+      "picker-unavailable", "model-unavailable", "reasoning-unavailable", "model-unconfirmed",
       "unknown", "monitor-not-ready", "composer-blocked", "composer-unavailable",
       "model-preference", "conversation-changed", "composer-changed",
       "composer-has-draft", "composer-insert-failed", "composer-text-mismatch",
@@ -247,8 +247,12 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
   if (details.instructionsAttached === true) entry.instructionsAttached = true;
   if (event.startsWith("model-selection-")) {
-    if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details.model)) entry.model = details.model;
-    if (["instant", "medium", "high"].includes(details.reasoning)) entry.reasoning = details.reasoning;
+    for (const field of ["model", "observedModel"]) {
+      if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details[field])) entry[field] = details[field];
+    }
+    for (const field of ["reasoning", "observedReasoning"]) {
+      if (["instant", "medium", "high"].includes(details[field])) entry[field] = details[field];
+    }
   }
 
   diagnosticWrites = diagnosticWrites.then(async () => {
@@ -1222,8 +1226,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "modelPreferenceResult") {
       if (targetMatches(tabId) || cyclePromptsInFlight.has(tabId)) {
-        void recordDiagnostic(message.ok ? "model-selection-applied" : "model-selection-failed", {
+        const event = !message.ok ? "model-selection-failed"
+          : message.settled ? "model-selection-settled" : "model-selection-applied";
+        void recordDiagnostic(event, {
           tabId, model: message.model, reasoning: message.reasoning,
+          observedModel: message.observedModel, observedReasoning: message.observedReasoning,
           success: Boolean(message.ok), reason: message.ok ? undefined : message.reason,
         });
       }
@@ -1445,6 +1452,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "composer-insert-failed": "Could not insert the prompt into ChatGPT's composer. Refresh ChatGPT, then Retry.",
             "composer-text-mismatch": "ChatGPT did not retain the inserted prompt text. Refresh ChatGPT, then Retry.",
             "model-preference": "Could not apply the model settings before sending.",
+            "model-unconfirmed": "The new chat has not settled on the configured model and reasoning.",
             "picker-unavailable": "Could not open the model picker.",
             "model-unavailable": "The configured model is unavailable in ChatGPT.",
             "reasoning-unavailable": "Could not set the configured reasoning level.",

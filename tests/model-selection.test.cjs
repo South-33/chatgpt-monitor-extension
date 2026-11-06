@@ -128,6 +128,24 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(layoutChecks, 1, 'only model candidates require a layout/visibility read');
   assert.equal(await f.ctx.applyModelPreferences(f.preferences), true);
   assert.deepEqual(f.selection(), { selected: 'GPT-5.6 Sol', effort: 'high', open: false });
+  const composer = f.ctx.findComposer();
+  f.ctx.findComposer = () => composer;
+  f.trigger.innerText = 'Thinking effort\nHigh';
+  assert.equal(await f.ctx.waitForHandoffModel(composer, f.ctx.location.href, f.preferences), false,
+    'the same effort on the wrong model cannot authorize the first send');
+  assert.equal(f.reports.at(-1).observedModel, 'GPT-6');
+  let reads = 0;
+  f.ctx.waitFor = async predicate => {
+    for (const badge of ['Medium', '5.6 High', 'Medium', '5.6 High', '5.6 High']) {
+      f.trigger.innerText = badge;
+      reads++;
+      if (predicate()) return true;
+    }
+    return false;
+  };
+  assert.equal(await f.ctx.waitForHandoffModel(composer, f.ctx.location.href, f.preferences), true);
+  assert.equal(reads, 5, 'a transient matching badge cannot authorize the first send');
+  f.ctx.waitFor = loading.ctx.waitFor;
   assert.equal(await f.ctx.applyModelPreferences(f.preferences), true);
   assert.equal(f.clicks.filter(element => element === f.models[1]).length, 2,
     'each send selects the configured model, even when its row was already checked');
