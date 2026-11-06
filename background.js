@@ -996,10 +996,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.recoveryCheckPrompt = "";
         state.issue = "";
       }
-      if (!paused && state.deliveryRetry) {
-        state.deliveryRetry = null;
-        state.issue = "";
-      }
       state.phase = paused ? "paused" : state.resumePhase || "watching";
       await persistRuntime();
       void recordDiagnostic("pause-changed", { tabId, reason: paused ? "paused" : "resumed", phase: state.phase });
@@ -1554,10 +1550,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.isGenerating) {
       let changed = false;
-      if (state.deliveryRetry && state.issue === "ChatGPT delivery timed out. Retrying the message.") {
-        state.issue = "";
-        changed = true;
-      }
       if (state.terminalReviewIdleSince) {
         state.terminalReviewIdleSince = null;
         changed = true;
@@ -1603,35 +1595,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await persistRuntime();
     }
 
-    if (message.recoveryReason === "message-delivery-timeout" && message.recoveryKey) {
-      if (message.composerEmpty !== true) { sendResponse({}); return; }
-      const retry = state.deliveryRetry?.key === message.recoveryKey
-        ? state.deliveryRetry : { key: message.recoveryKey, attempts: 0, retryAt: 0 };
-      if (Date.now() < retry.retryAt) { sendResponse({}); return; }
-      if (!message.deliveryRetryAvailable || retry.attempts >= 3) {
-        state.resumePhase = state.phase;
-        state.paused = true;
-        state.phase = "paused";
-        state.deliveryRetry = retry;
-        state.issue = "ChatGPT could not deliver the message. Check the chat, then Resume to retry.";
-        void recordDiagnostic("pause-changed", { tabId, phase: state.phase,
-          reason: "message-delivery-timeout", attempt: retry.attempts });
-        await persistRuntime();
-        sendResponse({});
-        return;
-      }
-      if (SENDING_PHASES.has(state.phase) && sameSubmittedPrompt(message.latestUserText, state.actionPrompt)) {
-        markTransientActionAccepted(state);
-      }
-      retry.attempts++;
-      retry.retryAt = Date.now() + 30000 * 2 ** (retry.attempts - 1);
-      state.deliveryRetry = retry;
-      state.issue = "ChatGPT delivery timed out. Retrying the message.";
-      void recordDiagnostic("response-recovery", { tabId, phase: state.phase,
-        reason: "message-delivery-timeout", attempt: retry.attempts });
+    const deliveryTimedOut = message.recoveryReason === "message-delivery-timeout";
+    if (deliveryTimedOut && message.recoveryKey && message.recoveryKey !== state.lastRecoveryKey
+        && SENDING_PHASES.has(state.phase) && sameSubmittedPrompt(message.latestUserText, state.actionPrompt)) {
+      markTransientActionAccepted(state);
       await persistRuntime();
-      sendResponse({ action: "retryDelivery", recoveryKey: message.recoveryKey });
-      return;
     }
 
     if (state.resumeContinuePending) {
@@ -1695,12 +1663,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // composer is idle, so recover once for this turn even without an error card.
     if (message.recoveryKey && message.recoveryKey !== state.lastRecoveryKey
         && state.taskStatus === "ongoing" && !message.latestResponseText) {
-      if (message.recoveryReason === "missing-final-answer" && Date.now() < state.deliveryRetry?.retryAt) {
-        sendResponse({});
-        return;
-      }
       if (message.composerEmpty === false) { sendResponse({}); return; }
-      if (state.recoveryCheckPrompt) {
+      if (state.recoveryCheckPrompt && !deliveryTimedOut) {
         state.paused = true;
         state.phase = "paused";
         state.issue = "Could not read the check-in reply. Check ChatGPT, then Resume.";
@@ -1730,8 +1694,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.lastRecoveryAt = Date.now();
       state.lastRecoveryKey = message.recoveryKey;
       void recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
+      if (deliveryTimedOut) state.recoveryCheckPrompt = "";
       const result = state.phase === "waiting-for-terminal-review"
         ? requestTerminalReview(state, state.terminalReviewKind, state.terminalReviewPrompt, "stream-recovery")
+        : deliveryTimedOut ? requestContinue(state, undefined, "stream-recovery")
         : handoffInProgress(state) ? requestHandoff(state, handoffPrompt(), "stream-recovery")
         : message.recoveryReason === "connection-interrupted" && !thresholdReached(state)
           ? requestRecoveryCheck(state, "stream-recovery")
@@ -1859,7 +1825,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.responseKey) state.lastResponseKey = message.responseKey;
-    if (message.latestResponseIsSubstantive && message.latestResponseText) state.deliveryRetry = null;
     state.recoveryStreak = 0;
     state.lastRecoveryAt = null;
     state.issue = "";

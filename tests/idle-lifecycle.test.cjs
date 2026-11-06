@@ -32,15 +32,15 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
   let generating = false;
   let draft = interruption || deliveryTimeout ? 'Unsent draft' : '';
   const actions = [];
-  const button = {};
+  let turnKey = 'interrupted-turn';
   const main = {
     innerText: 'Thinking\nTool activity from an interrupted response',
-    hasAttribute(name) { return interruption && name === 'data-turn-key'; },
-    getAttribute(name) { return this.hasAttribute(name) ? 'interrupted-turn' : null; },
+    hasAttribute(name) { return (interruption || deliveryTimeout) && name === 'data-turn-key'; },
+    getAttribute(name) { return this.hasAttribute(name) ? turnKey : null; },
     querySelectorAll(selector) {
       const errorSelector = deliveryTimeout ? 'aside[role="alert"]' : interruption ? '[role="status"]' : '[role="alert"]';
       return error && selector === errorSelector
-        ? [{ innerText: error, querySelectorAll: () => [button] }] : [];
+        ? [{ innerText: error }] : [];
     },
   };
   const sandbox = {
@@ -54,8 +54,7 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
     isConversationPage: () => true,
     isGenerating: () => generating,
     findComposer: () => ({}), visible: () => true,
-    buttonLabel: () => 'Retry', controlReady: element => element === button,
-    HTMLElement: { prototype: { click() { assert.equal(this, button); actions.push('native-retry'); } } },
+    HTMLElement: { prototype: { click() { assert.fail('delivery recovery must never click Retry'); } } },
     assistantTurns: () => [], latestAssistantResponse: () => ({ text: '' }),
     captureResponse: () => interruption
       ? { text: 'Partial reply', responseKey: 'partial', substantive: true }
@@ -83,6 +82,7 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
   vm.runInNewContext(content.slice(content.indexOf('function streamRecoveryFailure'), content.indexOf('function fingerprint')), sandbox);
   if (deliveryTimeout) {
     vm.runInNewContext(content.slice(content.indexOf('async function handleAction'), content.indexOf('async function deliverPendingHandoff')), sandbox);
+    sandbox.sendPrompt = async prompt => { actions.push(prompt); return true; };
     const checkIn = await send({ type: 'extendedThinkingRecoveryReady', url: sender.tab.url });
     await send({ type: 'commandResult', action: 'sendContinue', ok: true, url: sender.tab.url });
     sandbox.latestUserText = () => checkIn.prompt;
@@ -96,21 +96,19 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
     assert.deepEqual(actions, [], 'preserve an unsent draft');
     draft = '';
     await sandbox.scan();
-    assert.deepEqual(actions, ['native-retry']);
-    assert.equal(local.runtime.states[1].recoveryCheckPrompt, sandbox.latestUserText());
+    assert.equal(actions.length, 1);
+    assert.match(actions[0], /Goal contract/);
+    assert.equal(local.runtime.states[1].recoveryCheckPrompt, '');
+    assert.equal(local.runtime.states[1].goalTurns, 0);
+    assert.equal((await send({ type: 'getMonitorStatus', tabId: 1, url: sender.tab.url })).paused, false);
+    now += 30000;
     await sandbox.scan();
-    assert.equal(actions.length, 1, 'an unchanged card must respect backoff');
-    for (const delay of [30000, 60000, 120000]) {
-      now += delay;
-      await sandbox.scan();
-    }
-    assert.equal(actions.length, 3, 'retries stop after three attempts');
-    assert.equal((await send({ type: 'getMonitorStatus', tabId: 1, url: sender.tab.url })).paused, true);
-    await send({ type: 'setPaused', tabId: 1, paused: false });
+    assert.equal(actions.length, 1, 'an unchanged card must not send another Continue');
+    turnKey = 'next-turn';
     await sandbox.scan();
-    assert.equal(actions.length, 4, 'Resume allows another retry');
+    assert.equal(actions.length, 2, 'a new timed-out turn can recover even with identical prompt text');
     const { events } = await send({ type: 'getDiagnostics' });
-    assert.ok(events.some(event => event.reason === 'message-delivery-timeout' && event.attempt === 3));
+    assert.ok(events.some(event => event.event === 'response-recovery' && event.reason === 'message-delivery-timeout'));
     return;
   }
   if (interruption) {
@@ -148,6 +146,6 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
   await scenario({ error: null });
   await scenario({ error: 'ChatGPT stream recovery polling timed out', baseline: 61 });
   await scenario({ error: 'Connection interrupted. Waiting for the complete answer', interruption: true });
-  await scenario({ error: 'Message delivery timed out. Please try again.\nRetry', deliveryTimeout: true });
+  await scenario({ error: 'Message delivery timed out. Please try again.\nRetry', baseline: 61, deliveryTimeout: true });
   console.log('idle_lifecycle_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });
