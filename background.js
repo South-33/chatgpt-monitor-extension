@@ -519,7 +519,7 @@ function nextAction(state, phase, name, prompt) {
   state.actionPrompt = prompt || "";
   state.actionPromptMode = mode;
   if (name === "sendTerminalReview") state.terminalReviewPrompt = prompt;
-  if (mode === "recovery-check") state.recoveryCheckPrompt = prompt;
+  if (prompt) state.recoveryCheckPrompt = mode === "recovery-check" ? prompt : "";
   state.actionSource = state.nextActionSource || "automatic";
   state.nextActionSource = null;
   state.issue = "";
@@ -615,7 +615,6 @@ function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kin
 }
 
 function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
-  state.recoveryCheckPrompt = RECOVERY_CHECK_PROMPT;
   return requestContinue(state, RECOVERY_CHECK_PROMPT, source);
 }
 
@@ -1750,11 +1749,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({});
       return;
     }
-    if (state.recoveryCheckPrompt && isNewResponse
-        && !sameSubmittedPrompt(message.latestUserText, state.recoveryCheckPrompt)) {
-      sendResponse({});
-      return;
-    }
     const reviewOutcome = reconsidering ? terminalStatus(message.latestResponseText, "reconsider") : null;
     if (reconsidering) {
       if (message.composerEmpty === false) { sendResponse({}); return; }
@@ -1770,6 +1764,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const terminal = reconsidering ? (reviewOutcome === "continue" ? null : reviewOutcome)
       : isNewResponse && message.latestResponseIsSubstantive !== false && !sideTask && !handoffInProgress(state)
         ? terminalStatus(message.latestResponseText) : null;
+    if (state.recoveryCheckPrompt && isNewResponse
+        && !sameSubmittedPrompt(message.latestUserText, state.recoveryCheckPrompt)) {
+      // Older runs can retain the check-in after a Goal continuation replaced it.
+      const submitted = promptWithoutInstructions(message.latestUserText).replace(/\s+/g, " ").trim();
+      if (!terminal || !submitted.endsWith(GOAL_CONTRACT.replace(/\s+/g, " "))) {
+        sendResponse({});
+        return;
+      }
+    }
     if (terminal) {
       if (!reconsidering) {
         // An unsubmitted user draft must never be overwritten by automation.

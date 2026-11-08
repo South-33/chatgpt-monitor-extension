@@ -742,6 +742,20 @@ function send(message, sender = {}) {
     latestResponseText: '', recoveryKey: 'unreadable-check-in-turn', composerEmpty: true }, longThinkingTab);
   assert.equal(resumedCheck.action, 'sendContinue');
   assert.notEqual(resumedCheck.prompt, repeatedCheck.prompt, 'Resume returns to normal work, not another check-in');
+  const pendingResume = await send({ type: 'extendedThinkingRecoveryReady', url: longThinkingTab.tab.url }, longThinkingTab);
+  await send({ type: 'commandResult', action: 'sendContinue', ok: true, url: longThinkingTab.tab.url }, longThinkingTab);
+  local.runtime.states[30].resumeContinuePending = true;
+  const replacement = await send({ type: 'status', url: longThinkingTab.tab.url, composerEmpty: true }, longThinkingTab);
+  assert.match(replacement.prompt, /Goal contract/);
+  assert.equal(local.runtime.states[30].recoveryCheckPrompt, '');
+  await send({ type: 'commandResult', action: 'sendContinue', ok: true, url: longThinkingTab.tab.url }, longThinkingTab);
+  local.runtime.states[30].recoveryCheckPrompt = pendingResume.prompt;
+  const recoveredFinish = await send({
+    type: 'status', url: longThinkingTab.tab.url, responseKey: 'finished-after-resume',
+    latestUserText: replacement.prompt, latestResponseText: 'Verified.\nTASK_FINISHED',
+    latestResponseIsSubstantive: true, composerEmpty: true,
+  }, longThinkingTab);
+  assert.equal(recoveredFinish.action, 'sendTerminalReview', 'a completed Goal reply can recover a stale check-in');
 
   await send({ type: "setMonitoring", enabled: true, tabId: 31, url: "https://chatgpt.com/c/long-thinking-threshold" });
   const longThinkingThresholdTab = { tab: { id: 31, url: "https://chatgpt.com/c/long-thinking-threshold" } };
