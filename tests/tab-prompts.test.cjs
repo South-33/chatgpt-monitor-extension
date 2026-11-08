@@ -103,7 +103,7 @@ function worker() {
   for (const [index, step, label, reply, expected] of [
     [1, 1, 'Goal', 'Goal in progress.', /Work on task 4 only\./],
     [2, 1, 'Goal', 'Goal in progress.', /Goal contract/],
-    [3, 2, 'Improve', 'Goal in progress.', /Improve the agent harness/],
+    [3, 2, 'Improve', 'Goal in progress.', /Improve how you carry out the remaining work on this task/],
     [4, 2, 'Improve', 'IMPROVE_FINISHED was mentioned.\nStill testing.', /IMPROVE_FINISHED/],
     [5, 2, 'Improve', 'TASK_BLOCKED', /IMPROVE_BLOCKED/],
     [6, 3, 'Housekeeping', 'Verified the new harness.\nIMPROVE_FINISHED', /HOUSEKEEPING_FINISHED/],

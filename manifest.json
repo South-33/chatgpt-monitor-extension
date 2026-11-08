@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Agent Monitor",
-  "version": "1.5.62",
+  "version": "1.5.63",
   "description": "Keeps one long-running ChatGPT task moving with guarded continuation and handoff prompts.",
   "permissions": ["storage", "scripting", "alarms", "tabs", "power"],
   "host_permissions": [

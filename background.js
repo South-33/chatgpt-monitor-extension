@@ -88,7 +88,7 @@ function continuationPrompt(text) {
 }
 
 const CYCLE_GUIDANCE = new Map([
-  ["improve", "Improve the agent harness where it will most help the remaining work. Find the recurring bottleneck that costs the agent the most time, reliability, or useful evidence. Ask what you would build from scratch for this goal with the tools and hardware available. Use your judgment to choose the strongest approach and give it a real trial. Be willing to build custom tools, change how you gather or present evidence, or replace the whole workflow if that is the best fit. Judge the end-to-end result on representative work. Finish when you verify a meaningful gain or have good reason to expect little payoff from further work."],
+  ["improve", "Improve how you carry out the remaining work on this task. Look at the tools and workflow you use to investigate, make changes, and verify results. Find where you repeatedly lose time, hit errors, or lack the evidence you need. Ask how you would approach the task from scratch with the tools and hardware available. Give the strongest idea a real trial, even if it means building custom tools, changing how you gather or present evidence, or replacing your workflow. Test it on a representative part of the task and judge the overall result. Finish when you verify a meaningful gain or have good reason to expect little benefit from further changes."],
   ["housekeeping", HOUSEKEEPING_GUIDANCE],
 ]);
 
