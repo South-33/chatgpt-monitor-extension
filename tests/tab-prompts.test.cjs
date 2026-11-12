@@ -101,18 +101,24 @@ function worker() {
   assert.equal(other.housekeeping, false);
   assert.equal(other.preferredModel, 'GPT-5.6 Sol');
   for (const [index, step, label, reply, expected] of [
-    [1, 1, 'Goal', 'Goal in progress.', /Work on task 4 only\./],
-    [2, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [1, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],
+    [2, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],
     [3, 2, 'Improve', 'Goal in progress.', /Improve how you carry out the remaining work on this task/],
     [4, 2, 'Improve', 'IMPROVE_FINISHED was mentioned.\nStill testing.', /IMPROVE_FINISHED/],
     [5, 2, 'Improve', 'TASK_BLOCKED', /IMPROVE_BLOCKED/],
     [6, 3, 'Housekeeping', 'Verified the new harness.\nIMPROVE_FINISHED', /HOUSEKEEPING_FINISHED/],
     [7, 3, 'Housekeeping', 'HOUSEKEEPING_FINISHED\nStill consolidating.', /HOUSEKEEPING_BLOCKED/],
     [8, 1, 'Goal', 'Need access to the archive.\nHOUSEKEEPING_BLOCKED', /Work on task 4 only\./],
-    [9, 1, 'Goal', 'Goal in progress.', /Goal contract/],
-    [10, 1, 'Goal', 'Goal in progress.', /Goal contract/],
+    [9, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],
+    [10, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],
     [11, 2, 'Improve', 'Goal in progress.', /Improve contract/],
   ]) {
+    let latestUserText;
+    if (index === 1) {
+      const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
+      await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+      latestUserText = check.prompt;
+    }
     if (index === 2) harness = worker();
     if (index === 5) {
       const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
@@ -124,7 +130,7 @@ function worker() {
       await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
     }
     const action = await harness.send({ type: 'status', url: reviewUrl, isGenerating: false,
-      responseKey: `workflow-${index}`, latestResponseText: reply,
+      responseKey: `workflow-${index}`, latestResponseText: reply, latestUserText,
     }, reviewSender);
     assert.match(action.prompt, expected);
     if (step === 3) {
@@ -193,13 +199,13 @@ function worker() {
   const continuation = key => harness.send({ type: 'status', url: cycleUrl, isGenerating: false,
     responseKey: key, latestResponseText: 'More work remains.' }, cycleSender);
   const generic1 = await continuation('cycle-goal-1');
-  assert.match(generic1.prompt, /Work on task 2 only\.[\s\S]*TASK_FINISHED/);
+  assert.match(generic1.prompt, /Continue\.\n\nGoal contract[\s\S]*TASK_FINISHED/);
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: false, url: cycleUrl }, cycleSender);
   assert.equal(local.runtime.states[2].cycleTask, 'goal', 'failed sends keep the current step');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   harness = worker();
   const generic2 = await continuation('cycle-goal-2');
-  assert.equal(generic2.prompt, generic1.prompt, 'the goal prompt repeats after a restart');
+  assert.equal(generic2.prompt, generic1.prompt, 'the second short continuation survives a restart');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   const customAgain = await continuation('cycle-custom-again');
   assert.ok(customAgain.prompt.includes('Work on task 2 only.'));
@@ -207,8 +213,7 @@ function worker() {
   assert.equal(local.runtime.states[3].cycleTask, 'goal', 'another tab has its own cycle');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: 'Updated task two notes.' });
-  const updatedCustom = await continuation('cycle-updated-custom');
-  assert.ok(updatedCustom.prompt.includes('Updated task two notes.'), 'changed custom notes are sent before another generic turn');
+  assert.equal((await continuation('cycle-updated-custom')).prompt, generic1.prompt);
   await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: 'Work on task 2 only.' });
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   const beforeRecovery = local.runtime.states[2].cycleTask;
@@ -216,7 +221,7 @@ function worker() {
   assert.equal(checkIn.prompt.includes('automated continuation'), false, 'recovery keeps its short status check');
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: cycleUrl }, cycleSender);
   assert.equal(local.runtime.states[2].cycleTask, beforeRecovery, 'check-ins do not advance the cycle');
-  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: generic1.prompt });
+  await harness.send({ type: 'saveContinuePreset', tabId: 2, index: 1, text: customAgain.prompt });
   assert.equal((await harness.send({ type: 'getSettings', tabId: 2 })).settings.continuePrompt, 'Work on task 2 only.',
     'current generated wrappers are stripped when pasted back into a preset');
   await harness.send({ type: 'setMonitoring', enabled: false, tabId: 1 });

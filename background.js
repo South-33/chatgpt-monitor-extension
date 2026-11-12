@@ -45,6 +45,7 @@ const GIT_COMMIT_EXAMPLE = `Example:
 > Stashing a prompt, switching providers, and restoring it didn't work: the stash was bucketed per provider instance, so after a switch the badge disappeared and the stash looked lost. Restoring also dragged the stashed model selection back, defeating the point of moving a prompt to a different provider. The stash is now one global queue that carries only what every provider accepts — restore drops into whatever thread/provider is currently selected and leaves the model choice alone.`;
 
 const GOAL_TURNS_PER_ROUND = 3;
+const GOAL_CONTINUATION = continuationPrompt("Continue.");
 // Estimated 128k context plus 16k headroom, at 809 tokens per 9.5 seconds.
 const INSTRUCTION_REFRESH_SECONDS = Math.ceil(144000 * 9.5 / 809);
 const GLOBAL_INSTRUCTIONS_HEADER = "\n\nGlobal AGENTS.md (user instructions)\n";
@@ -158,7 +159,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "handoff-delivered",
   "heartbeat",
 ]);
-const DIAGNOSTIC_PROMPT_MODES = new Set(["recovery-check", "custom-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
+const DIAGNOSTIC_PROMPT_MODES = new Set(["recovery-check", "custom-continue", "goal-continue", "workflow-review", "housekeeping", "handoff", "terminal-review", "none"]);
 const CONTENT_DIAGNOSTIC_REASONS = new Set([
   "timer-started", "notice-disappeared", "generation-ended", "monitor-reset", "configured-limit",
   "stop-control-visible", "stop-control-disappeared", "stop-control-remained-visible",
@@ -179,6 +180,7 @@ function promptKind(action, prompt) {
   if (action === "sendContinue") {
     if (prompt === cycleTaskPrompt("improve")) return "workflow-review";
     if (prompt === cycleTaskPrompt("housekeeping")) return "housekeeping";
+    if (prompt === GOAL_CONTINUATION) return "goal-continue";
     return "custom-continue";
   }
   if (action === "sendHandoff") return "handoff";
@@ -592,7 +594,7 @@ function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
     state.cycleTask ||= "goal";
     prompt = cycleTaskPrompt(state.cycleTask)
-      || continuationPrompt(customContinueText(continuePromptForTab(state.tabId)));
+      || (state.goalTurns ? GOAL_CONTINUATION : continuationPrompt(customContinueText(continuePromptForTab(state.tabId))));
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
@@ -1868,13 +1870,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (state.cycleTask && !reconsidering && !wasRecoveryCheck && message.latestResponseIsSubstantive !== false) {
+    if (state.cycleTask && !reconsidering && message.latestResponseIsSubstantive !== false) {
       const marker = state.cycleTask.toUpperCase();
       const matchingPrompt = !message.latestUserText || (
         message.latestUserText.includes(`${marker}_FINISHED`)
         && message.latestUserText.includes(`${marker}_BLOCKED`)
       );
-      const outcome = sideTask && matchingPrompt ? terminalStatus(message.latestResponseText, state.cycleTask) : null;
+      const outcome = sideTask && !wasRecoveryCheck && matchingPrompt
+        ? terminalStatus(message.latestResponseText, state.cycleTask) : null;
       if (outcome) {
         void recordDiagnostic("cycle-step-ended", {
           tabId, contract: state.cycleTask, observedTerminal: outcome,

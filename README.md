@@ -8,7 +8,7 @@ Chrome extension that continues a ChatGPT task and carries its checkpoint into a
 
 The model checkbox applies the configured model and reasoning after the draft is ready, immediately before each automated send. **Keep current** leaves that field to ChatGPT. Model, reasoning, and review checkboxes are per tab. The four prompt texts, plugin, and timers are shared. Each tab remembers its selected preset.
 
-Each round runs your **Goal** prompt, two Goal continuations, **Improve**, then **Housekeeping**. The monitor skips disabled reviews and repeats each enabled review until it reports finished or blocked. A Goal finish or block starts **Reconsider**, which verifies whether to stop or return to Goal.
+Each round starts with your custom **Goal** prompt, followed by two short **Continue** prompts under the Goal contract. A completed watchdog check-in counts for the Goal turn it interrupted. **Improve** and **Housekeeping** run in that order when enabled and repeat until they report finished or blocked. A Goal finish or block starts **Reconsider**.
 Hover over the cycle number for the current stage. Either arrow stops the current reply and starts its review. On an off tab, monitoring lasts only for that review.
 
 **Pause** keeps elapsed time. **Handoff** starts a fresh chat with a checkpoint. Drag the top slider to adjust elapsed time toward the next handoff, even before monitoring starts.
