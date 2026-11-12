@@ -116,10 +116,22 @@ function worker() {
     let latestUserText;
     if (index === 1) {
       const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
+      assert.equal(local.runtime.states[4].goalTurns, 1, 'the confirmed stop counts before the check-in reply');
+      await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+      harness = worker();
+      const checkAgain = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
+      assert.equal(checkAgain.prompt, check.prompt);
+      assert.equal(local.runtime.states[4].goalTurns, 1, 'interrupting the check-in after restart cannot count twice');
+      await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
+      latestUserText = checkAgain.prompt;
+    }
+    if (index === 2) harness = worker();
+    if (index >= 9) {
+      const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
+      assert.equal(local.runtime.states[4].goalTurns, index - 8, 'a round of interrupted Goal turns still reaches Improve');
       await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);
       latestUserText = check.prompt;
     }
-    if (index === 2) harness = worker();
     if (index === 5) {
       const check = await harness.send({ type: 'extendedThinkingRecoveryReady', url: reviewUrl }, reviewSender);
       await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: reviewUrl }, reviewSender);

@@ -240,7 +240,10 @@ function recordDiagnostic(event, details = {}) {
     if (stage && (event === "action-requested" || event === "action-result" || event === "heartbeat")) {
       entry.cycleStep = stage.step;
       entry.cycleTotal = stage.total;
-      if (entry.contract === "goal") entry.goalTurns = state.goalTurns || 0;
+      if (entry.contract === "goal") {
+        entry.goalTurns = state.goalTurns || 0;
+        entry.goalTurnPending = state.goalTurnPending;
+      }
     }
   }
   if (typeof details.success === "boolean") entry.success = details.success;
@@ -318,6 +321,11 @@ async function initialize() {
   for (const [tabId, state] of Object.entries(runtime.states || {})) {
     const id = Number(tabId);
     state.tabId = id;
+    if (state.goalTurnPending === undefined) {
+      state.goalTurnPending = state.cycleTask === "goal"
+        && ["waiting-for-response", "working", "threshold-waiting"].includes(state.resumePhase || state.phase);
+      if (state.recoveryCheckPrompt) finishGoalTurn(state);
+    }
     if (state.taskStatus === "finished" || state.taskStatus === "blocked") {
       state.paused = true;
       state.phase = "paused";
@@ -402,6 +410,7 @@ function newState(url, carry = null, tabId = carry?.tabId ?? null) {
     resumeContinuePending: false,
     cycleTask: "",
     goalTurns: 0,
+    goalTurnPending: false,
     maxWorkedSeconds: 0,
     historyWorkedSeconds: 0,
     trackedSeconds: 0,
@@ -489,7 +498,7 @@ function terminalStatus(text, task = "goal") {
 function relayPrompt(handoff, state, instructions) {
   const relay = `${HANDOFF_RELAY}\n\n${handoff}`;
   const activeStep = cycleTaskPrompt(state?.cycleTask);
-  if (!activeStep) return `${relay}\n\n${continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)))}`;
+  if (!activeStep) return `${relay}\n\n${goalPromptForState(state)}`;
   const git = state.cycleTask === "housekeeping" ? housekeepingGitSuffix(Boolean(instructions)) : "";
   return `${relay}\n\nResume the current step first.\n\n${activeStep}${git}`;
 }
@@ -541,6 +550,7 @@ function requestHandoff(state, prompt = handoffPrompt(), source = "automatic") {
   if (!handoffInProgress(state) && source !== "incomplete-handoff") {
     state.handoffShortRetryUsed = false;
   }
+  state.goalTurnPending = false;
   state.nextActionSource = source;
   return nextAction(state, "sending-handoff", "sendHandoff", prompt);
 }
@@ -590,11 +600,32 @@ function cycleStage(tabId, task) {
   return { step: tasks.indexOf(task || "goal") + 1, total: tasks.length, label: labels[task || "goal"] };
 }
 
+function goalPromptForState(state) {
+  return state?.goalTurns ? GOAL_CONTINUATION : continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)));
+}
+
+function finishGoalTurn(state) {
+  if (state.cycleTask !== "goal" || !state.goalTurnPending) return;
+  state.goalTurnPending = false;
+  state.goalTurns = (state.goalTurns || 0) + 1;
+}
+
+function advanceGoalRound(state) {
+  if (state.cycleTask !== "goal" || (state.goalTurns || 0) < GOAL_TURNS_PER_ROUND) return;
+  state.goalTurns = 0;
+  state.cycleTask = cycleTasks(state.tabId)[1] || "goal";
+}
+
+function isGoalPrompt(text) {
+  return promptWithoutInstructions(text).replace(/\s+/g, " ").trim()
+    .endsWith(GOAL_CONTRACT.replace(/\s+/g, " "));
+}
+
 function requestContinue(state, prompt, source = "automatic") {
   if (prompt === undefined) {
     state.cycleTask ||= "goal";
-    prompt = cycleTaskPrompt(state.cycleTask)
-      || (state.goalTurns ? GOAL_CONTINUATION : continuationPrompt(customContinueText(continuePromptForTab(state.tabId))));
+    advanceGoalRound(state);
+    prompt = cycleTaskPrompt(state.cycleTask) || goalPromptForState(state);
   }
   state.nextActionSource = source;
   return nextAction(state, "sending-continue", "sendContinue", prompt);
@@ -611,6 +642,7 @@ function requestTerminalReview(state, kind, prompt = terminalReviewPromptFor(kin
   // Reconsider does not consume a Goal turn.
   state.terminalReviewKind = kind || state.terminalReviewKind || "finished";
   state.terminalReviewIdleSince = null;
+  state.goalTurnPending = false;
   state.recoveryCheckPrompt = "";
   state.nextActionSource = source;
   return nextAction(state, "sending-terminal-review", "sendTerminalReview", prompt);
@@ -622,6 +654,7 @@ function requestRecoveryCheck(state, source = "extended-thinking-watchdog") {
 
 
 function requestAutomaticFollowUp(state, source = "completed-response") {
+  advanceGoalRound(state);
   return thresholdReached(state)
     ? requestHandoff(state, handoffPrompt(), source)
     : requestContinue(state, undefined, source);
@@ -633,6 +666,9 @@ function handoffInProgress(state) {
 
 
 function markTransientActionAccepted(state) {
+  if (state.phase === "sending-continue" && state.cycleTask === "goal" && isGoalPrompt(state.actionPrompt)) {
+    state.goalTurnPending = true;
+  }
   if (state.pendingInstructionRefreshAt != null) {
     state.instructionRefreshAt = state.pendingInstructionRefreshAt;
     state.pendingInstructionRefreshAt = null;
@@ -1071,6 +1107,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           state.phase = "sending-continue";
           state.cycleTask = message.kind;
+          state.goalTurnPending = false;
           state.pendingInstructionRefreshAt = null;
           state.actionSource = "";
           state.actionPromptMode = "none";
@@ -1327,6 +1364,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const freshState = newState(sender.tab?.url || message.url || "", previous, tabId);
           freshState.cycleTask = previous?.cycleTask || "goal";
           freshState.goalTurns = previous?.goalTurns || 0;
+          freshState.goalTurnPending = freshState.cycleTask === "goal";
           freshState.manualContractOnly = previous?.manualContractOnly;
           freshState.awaitingFreshConversation = !freshState.conversationKey.includes("/c/");
           states.set(tabId, freshState);
@@ -1411,9 +1449,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({});
         return;
       }
+      finishGoalTurn(state);
       const action = state.phase === "waiting-for-terminal-review"
         ? requestTerminalReview(state, state.terminalReviewKind, state.terminalReviewPrompt, "extended-thinking-watchdog")
-        : requestRecoveryCheck(state);
+        : handoffInProgress(state)
+          ? requestHandoff(state, state.actionPrompt || handoffPrompt(), "extended-thinking-watchdog")
+          : requestRecoveryCheck(state);
       await persistRuntime();
       sendResponse(action);
       return;
@@ -1703,7 +1744,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.lastRecoveryAt = Date.now();
       state.lastRecoveryKey = message.recoveryKey;
       void recordDiagnostic("response-recovery", { tabId, phase: state.phase, reason: message.recoveryReason });
-      if (deliveryTimedOut) state.recoveryCheckPrompt = "";
+      if (deliveryTimedOut) {
+        state.recoveryCheckPrompt = "";
+        state.goalTurnPending = false;
+      } else {
+        finishGoalTurn(state);
+      }
       const result = state.phase === "waiting-for-terminal-review"
         ? requestTerminalReview(state, state.terminalReviewKind, state.terminalReviewPrompt, "stream-recovery")
         : deliveryTimedOut ? requestContinue(state, undefined, "stream-recovery")
@@ -1769,8 +1815,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (state.recoveryCheckPrompt && isNewResponse
         && !sameSubmittedPrompt(message.latestUserText, state.recoveryCheckPrompt)) {
       // Older runs can retain the check-in after a Goal continuation replaced it.
-      const submitted = promptWithoutInstructions(message.latestUserText).replace(/\s+/g, " ").trim();
-      if (!terminal || !submitted.endsWith(GOAL_CONTRACT.replace(/\s+/g, " "))) {
+      if (!terminal || !isGoalPrompt(message.latestUserText)) {
         sendResponse({});
         return;
       }
@@ -1890,12 +1935,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.goalTurns = 0;
         const tasks = cycleTasks(tabId, state.cycleTask);
         state.cycleTask = tasks[tasks.indexOf(state.cycleTask) + 1] || "goal";
-      } else if (!sideTask) {
-        state.goalTurns = (state.goalTurns || 0) + 1;
-        if (state.goalTurns >= GOAL_TURNS_PER_ROUND) {
-          state.goalTurns = 0;
-          state.cycleTask = cycleTasks(tabId)[1] || "goal";
-        }
+      } else if (!sideTask && !wasRecoveryCheck
+          && (!message.latestUserText || isGoalPrompt(message.latestUserText))) {
+        finishGoalTurn(state);
       }
     }
     const result = requestAutomaticFollowUp(state);
