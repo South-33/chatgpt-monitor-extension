@@ -828,6 +828,27 @@ function send(message, sender = {}) {
     latestResponseText: "The work can continue.", composerEmpty: true }, adjustedTab);
   assert.equal(next.action, "sendHandoff", "the adjusted timer determines when handoff is due");
 
+  const limitedUrl = "https://chatgpt.com/c/conversation-limit";
+  const limitedTab = { tab: { id: 35, url: limitedUrl } };
+  await send({ type: "setMonitoring", enabled: true, tabId: 35, url: limitedUrl });
+  assert.equal((await send({ type: "setPaused", paused: true, reason: "conversation-limit",
+    url: "https://chatgpt.com/c/old-chat" }, limitedTab)).ok, false,
+  "a warning from a previous conversation cannot pause the current chat");
+  assert.equal((await send({ type: "setPaused", paused: true, reason: "conversation-limit",
+    url: limitedUrl }, limitedTab)).ok, true);
+  const limitedStatus = await send({ type: "getMonitorStatus", tabId: 35, url: limitedUrl });
+  assert.equal(limitedStatus.paused, true);
+  assert.match(limitedStatus.issue, /length limit/);
+  assert.equal(local.runtime.states[35].paused, true, "the pause survives a worker restart");
+  for (const event of [
+    { type: "status", recoveryKey: "limit", recoveryReason: "missing-final-answer", composerEmpty: true },
+    { type: "status", responseKey: "limit-reply", latestResponseText: "More work remains." },
+    { type: "extendedThinkingRecoveryReady" },
+  ]) {
+    assert.equal((await send({ ...event, url: limitedUrl }, limitedTab)).action, undefined,
+      "the length limit must stop continuation and watchdog recovery");
+  }
+
   console.log("background_flow_ok");
 })().catch((error) => {
   console.error(error);

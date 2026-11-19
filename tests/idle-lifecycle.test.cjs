@@ -71,7 +71,7 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
     recoverExtendedThinking: async () => false,
     resetExtendedThinking: () => {},
     followLatestConversation: () => false,
-    hasBlockingUi: () => false, composerText: () => draft,
+    hasBlockingUi: () => false, conversationLimitReached: () => false, composerText: () => draft,
     terminalMarker: () => null,
     scheduleScan() {},
     async handleAction(action) {

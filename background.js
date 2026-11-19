@@ -216,7 +216,7 @@ function recordDiagnostic(event, details = {}) {
     reason: new Set([
       ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
-      "unreadable-check-in",
+      "unreadable-check-in", "conversation-limit",
       "connection-interrupted", "stream-error", "missing-final-answer", "message-delivery-timeout",
       "review-reply-unconfirmed",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable", "model-unconfirmed",
@@ -1013,12 +1013,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "setPaused") {
-      const tabId = Number(message.tabId);
+      const tabId = Number(sender.tab?.id ?? message.tabId);
       if (!targetMatches(tabId)) {
         sendResponse({ ok: false, error: "This tab is not being monitored." });
         return;
       }
       const state = getState(tabId, states.get(tabId)?.url || message.url || "");
+      if (sender.tab && message.url && conversationKey(message.url) !== state.conversationKey) {
+        sendResponse({ ok: false });
+        return;
+      }
       const paused = Boolean(message.paused);
       if (paused && state.activeStartedAt) {
         state.trackedSeconds = (Number(state.trackedSeconds) || 0)
@@ -1038,8 +1042,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.issue = "";
       }
       state.phase = paused ? "paused" : state.resumePhase || "watching";
+      if (paused && message.reason === "conversation-limit") {
+        state.issue = "ChatGPT reached this conversation's length limit. Start a new chat to continue.";
+        state.retryAt = null;
+      }
       await persistRuntime();
-      void recordDiagnostic("pause-changed", { tabId, reason: paused ? "paused" : "resumed", phase: state.phase });
+      void recordDiagnostic("pause-changed", {
+        tabId, reason: paused ? (message.reason === "conversation-limit" ? "conversation-limit" : "paused") : "resumed", phase: state.phase,
+      });
       sendResponse({ ok: true, paused: state.paused });
       return;
     }

@@ -252,8 +252,19 @@ function pendingToolApproval() {
   });
 }
 
+function conversationLimitReached() {
+  return [...document.querySelectorAll(
+    'main [role="alert"], main aside, main [class*="text-error"], main [class*="text-token-error"], main [class*="text-red-"], main [class*="border-red-"]',
+  )].some(node =>
+    visible(node) && !node.closest('[data-message-author-role], pre, code, blockquote, textarea, [contenteditable="true"]')
+    && /^(?:you['’]ve|you have) reached the maximum length for this conversation\b/i.test(
+      normalizedText(node.innerText || node.textContent || ""),
+    ),
+  );
+}
+
 function hasBlockingUi() {
-  return pendingToolApproval() || Boolean(materializationDialog()) || blockingUiRunning;
+  return pendingToolApproval() || Boolean(materializationDialog()) || blockingUiRunning || conversationLimitReached();
 }
 
 function reportApproval(dialog, event, reason) {
@@ -1602,6 +1613,11 @@ async function scan() {
     }
 
     if (tabRole.paused) { resetExtendedThinking("monitor-reset"); return; }
+    if (conversationLimitReached()) {
+      resetExtendedThinking("monitor-reset");
+      await sendRuntime({ type: "setPaused", paused: true, reason: "conversation-limit", url: scannedUrl });
+      return;
+    }
     if (await recoverConversationLoad()) { resetExtendedThinking("monitor-reset"); return; }
     if (isConversationPage() && followLatestConversation()) {
       // Allow virtualized content to render before detecting approvals or

@@ -13,6 +13,8 @@ Hover over the cycle number for the current stage. Either arrow stops the curren
 
 **Pause** keeps elapsed time. **Handoff** starts a fresh chat with a checkpoint. Drag the top slider to adjust elapsed time toward the next handoff, even before monitoring starts.
 
+The monitor pauses when ChatGPT shows the conversation length limit. Start a new chat to continue.
+
 Open **Logs** to choose a folder for JSONL diagnostics or download a copy. New files are split by day and tab ID. The logs exclude chat text and page URLs.
 
 Import your global `AGENTS.md` from **Logs** to include its Git section in Housekeeping. The bundled example is used when there is no imported Git section. Fresh handoffs include the global instructions, and the next automated prompt refreshes them after about 28 minutes of tracked work.
