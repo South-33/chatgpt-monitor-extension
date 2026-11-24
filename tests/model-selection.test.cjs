@@ -31,7 +31,7 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
     trigger.hasAttribute = name => name === 'aria-haspopup' || name === 'aria-expanded';
   }
   const toggle = node('Medium', { 'aria-label': 'Select model', role: 'menuitem' });
-  const models = ['GPT-6', 'GPT-5.6 Sol', 'GPT-5.5\nLeaving on October 14'].map(label => {
+  const models = ['GPT-6', 'GPT-5.6 Sol', 'GPT-6.2'].map(label => {
     const item = node(label, { role: 'menuitemradio' });
     item.getAttribute = name => name === 'aria-checked' ? String(selected === label.split('\n')[0])
       : name === 'role' ? 'menuitemradio' : null;
@@ -130,10 +130,15 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.deepEqual(f.selection(), { selected: 'GPT-5.6 Sol', effort: 'high', open: false });
   const composer = f.ctx.findComposer();
   f.ctx.findComposer = () => composer;
-  f.trigger.innerText = 'Thinking effort\nHigh';
+  const wrong = fixture(0, true, 'GPT-6');
+  const wrongComposer = wrong.ctx.findComposer();
+  wrong.ctx.findComposer = () => wrongComposer;
+  wrong.trigger.innerText = 'High';
+  assert.equal(await wrong.ctx.waitForHandoffModel(wrongComposer, wrong.ctx.location.href, wrong.preferences), false);
+  f.trigger.innerText = 'Thinking effort\nMedium';
   assert.equal(await f.ctx.waitForHandoffModel(composer, f.ctx.location.href, f.preferences), false,
-    'the same effort on the wrong model cannot authorize the first send');
-  assert.equal(f.reports.at(-1).observedModel, 'GPT-6');
+    'the wrong effort cannot authorize the first send');
+  assert.equal(f.reports.at(-1).observedModel, '');
   let reads = 0;
   f.ctx.waitFor = async predicate => {
     for (const badge of ['Medium', '5.6 High', 'Medium', '5.6 High', '5.6 High']) {
@@ -172,6 +177,17 @@ function fixture(menuDelayQueries = 0, compact = false, initialModel = 'GPT-6') 
   assert.equal(switchToGpt6.selection().effort, 'medium');
   assert.equal(switchToGpt6.trigger.innerText, 'Medium',
     'collapsed GPT-6 control displays only the new effort level');
+
+  const newest = fixture(0, true, 'GPT-6');
+  newest.preferences.preferredModel = 'GPT-6.2';
+  assert.equal(await newest.ctx.applyModelPreferences(newest.preferences), true);
+  assert.equal(newest.selection().selected, 'GPT-6.2');
+  const newestComposer = newest.ctx.findComposer();
+  newest.ctx.findComposer = () => newestComposer;
+  assert.equal(await newest.ctx.waitForHandoffModel(newestComposer, newest.ctx.location.href, newest.preferences), true);
+  newest.preferences.preferredModel = 'GPT-6';
+  assert.equal(await newest.ctx.waitForHandoffModel(newestComposer, newest.ctx.location.href, newest.preferences), false,
+    'an identical High badge must not confuse GPT-6.2 and GPT-6');
 
   const disabled = fixture();
   disabled.preferences.enforceModelPreferences = false;

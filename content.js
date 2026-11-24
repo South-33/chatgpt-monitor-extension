@@ -1127,7 +1127,7 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
   const needsHandoffModel = requirePlugin && ownership.enforceModelPreferences !== false
     && (ownership.preferredModel || ownership.preferredReasoning);
   const modelSettled = modelReady && (!needsHandoffModel
-    || await waitForHandoffModel(composer, expectedUrl, ownership));
+    || await waitForHandoffModel(composer, expectedUrl, ownership, cyclePrompt));
   if (stopped || !sameConversation(expectedUrl) || findComposer() !== composer
       || isGenerating() || hasBlockingUi() || composerText(composer) !== draft) {
     lastPromptFailureReason = 'send-conditions-changed';
@@ -1163,7 +1163,7 @@ function modelPickerTrigger() {
       || button.hasAttribute('data-codex-intelligence-trigger')) && controlReady(button));
   if (explicit) return explicit;
 
-  // GPT-6 hides its model name in the closed picker. The composer toolbar
+  // GPT-6 and GPT-6.2 can hide their model names in the closed picker. The composer toolbar
   // displays only the reasoning effort (for example, "High ▾"). Find that
   // specific menu trigger near the composer, not any "High" text on the page.
   const composer = findComposer();
@@ -1173,7 +1173,7 @@ function modelPickerTrigger() {
   if (!toolbar) return null;
   return [...toolbar.querySelectorAll('button')].find(button =>
     controlReady(button)
-      && /^(?:(?:5\.6|5\.5)\s+)?(?:instant|medium|high)$/i.test(normalizedControlText(button.innerText || button.textContent || ''))) || null;
+      && /^(?:(?:6\.2|6|5\.6|5\.5)\s+)?(?:instant|medium|high)$/i.test(normalizedControlText(button.innerText || button.textContent || ''))) || null;
 }
 
 function pickerMenu(trigger) {
@@ -1220,24 +1220,64 @@ function readComposerModel(trigger) {
   let model = label;
   if (label === '5.6') model = 'GPT-5.6 Sol';
   else if (label === '5.5') model = 'GPT-5.5';
-  else if (/^(?:instant|medium|high)$/i.test(badge)) model = 'GPT-6';
+  else if (label === '6.2' || label === '6') model = 'GPT-' + label;
+  else if (/^(?:instant|medium|high)$/i.test(badge)) model = '';
   return { model, reasoning: selectedReasoning(trigger, null) };
 }
 
-async function waitForHandoffModel(composer, url, { preferredModel: model, preferredReasoning: reasoning }) {
+async function checkedPickerModel(trigger, canAct) {
+  if (controlMenuOpen(trigger) || !await canAct()) return '';
+  let selected = '';
+  clickControl(trigger, { pointerFirst: true });
+  try {
+    if (!await waitFor(() => pickerItems(pickerMenu(trigger)).length > 0, 2000)) return '';
+    const modelRows = () => pickerItems(pickerMenu(trigger), '[role="menuitemradio"], [role="option"]')
+      .filter(item => ['menuitemradio', 'option'].includes(item.getAttribute('role')));
+    if (!modelRows().length) {
+      const toggle = pickerItems(pickerMenu(trigger)).find(item => /^(?:select|choose) model$/i.test(item.getAttribute('aria-label') || ''));
+      if (!toggle || !await canAct()) return '';
+      clickControl(toggle);
+      if (!await waitFor(() => modelRows().length > 0, 2000)) return '';
+    }
+    const checked = modelRows().filter(item => item.getAttribute('aria-checked') === 'true'
+      || item.getAttribute('aria-selected') === 'true');
+    if (checked.length === 1) selected = modelLabel(checked[0]);
+  } finally {
+    if (controlMenuOpen(trigger)) {
+      pickerMenu(trigger)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      if (!await waitFor(() => !controlMenuOpen(trigger), 1000)) selected = '';
+    }
+  }
+  return await canAct() ? selected : '';
+}
+
+async function waitForHandoffModel(composer, url, { preferredModel: model, preferredReasoning: reasoning }, cyclePrompt) {
   let previous = null;
   let observed = {};
-  const ok = await waitFor(() => {
+  let ok = await waitFor(() => {
     const trigger = sameConversation(url) && findComposer() === composer ? modelPickerTrigger() : null;
     observed = readComposerModel(trigger);
     const effort = trigger?.getAttribute('data-selected-reasoning-effort');
     const ready = trigger && !controlMenuOpen(trigger)
-      && (!model || modelLabel({ textContent: observed.model }) === modelLabel({ textContent: model }))
+      && (!model || !observed.model || modelLabel({ textContent: observed.model }) === modelLabel({ textContent: model }))
       && (!reasoning || (observed.reasoning === reasoning && (!effort || effort.toLowerCase() === reasoning)));
     const settled = ready && trigger === previous;
     previous = ready ? trigger : null;
     return settled;
   }, 2000);
+  if (ok && model && !observed.model) {
+    const canAct = async () => {
+      const current = await sendRuntime({ type: 'isTargetTab', cyclePrompt });
+      return !stopped && sameConversation(url) && findComposer() === composer
+        && current?.target && !current.paused && current.enforceModelPreferences !== false
+        && !isGenerating() && !hasBlockingUi()
+        && (current.preferredModel || '') === model && (current.preferredReasoning || '') === (reasoning || '');
+    };
+    const selected = await checkedPickerModel(previous, canAct);
+    ok = selected === modelLabel({ textContent: model })
+      && (!reasoning || selectedReasoning(previous, null) === reasoning);
+    if (ok) observed.model = model;
+  }
   void sendRuntime({ type: 'modelPreferenceResult', settled: true, ok, model, reasoning,
     reason: 'model-unconfirmed', observedModel: observed.model, observedReasoning: observed.reasoning });
   return ok;

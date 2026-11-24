@@ -1,7 +1,7 @@
 if (typeof importScripts === "function") importScripts("log-files.js");
 
 const DEFAULT_SETTINGS = {
-  preferredModel: "GPT-5.6 Sol",
+  preferredModel: "GPT-6.2",
   preferredReasoning: "high",
   enforceModelPreferences: true,
   reviewWorkflow: false,
@@ -292,6 +292,17 @@ async function initialize() {
     settings.pluginName = DEFAULT_SETTINGS.pluginName;
   }
   let settingsChanged = false;
+  // Upgrade the previous default once; retain explicitly different choices.
+  if (!settings.modelDefaultsV62) {
+    for (const controls of [settings, ...Object.values(settings.tabControls || {})]) {
+      if ((controls?.preferredModel === "GPT-5.6 Sol" && controls.preferredReasoning === "high")
+          || controls?.preferredModel === "GPT-5.5") {
+        controls.preferredModel = DEFAULT_SETTINGS.preferredModel;
+      }
+    }
+    settings.modelDefaultsV62 = true;
+    settingsChanged = true;
+  }
 
   settings.targetTabIds = Array.isArray(settings.targetTabIds)
     ? [...new Set(settings.targetTabIds.filter(Number.isInteger))]

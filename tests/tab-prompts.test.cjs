@@ -99,7 +99,7 @@ function worker() {
   const other = (await harness.send({ type: 'getSettings', tabId: 2 })).settings;
   assert.equal(other.reviewWorkflow, false);
   assert.equal(other.housekeeping, false);
-  assert.equal(other.preferredModel, 'GPT-5.6 Sol');
+  assert.equal(other.preferredModel, 'GPT-6.2');
   for (const [index, step, label, reply, expected] of [
     [1, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],
     [2, 1, 'Goal', 'Goal in progress.', /Continue\.\n\nGoal contract/],

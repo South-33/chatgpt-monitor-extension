@@ -9,6 +9,7 @@ const script = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
 assert.match(html, /id="enforceModelPreferences" type="checkbox"/);
 assert.match(html, /<select id="preferredModel" disabled>/,
   'a real select shows all models instead of filtering a datalist to typed text');
+assert.match(html, /<option value="GPT-6\.2">GPT-6\.2<\/option>/);
 assert.match(html, /<option value="GPT-6">GPT-6<\/option>/);
 assert.match(html, /<option value="GPT-5\.6 Sol">GPT-5\.6 Sol<\/option>/);
 
