@@ -32,7 +32,7 @@ const GOAL_CONTRACT = `Goal contract\n${CONTINUE_TERMINAL_NOTE} Otherwise use ne
 const AUTOMATION_NOTE =
   "This is an automated continuation. Use your judgment. Pick up the original goal from its current state and apply the guidance below where it helps.";
 
-const GEMINI_GUIDANCE = "The user's Gemini quota is counted per turn, so make the most of each turn with long, meaningful progress toward the goal. Use your judgment; avoid repeated polling and early wrap-ups.\n\nTo request a wait, end your reply with MONITOR_SLEEP_MINUTES=N on its own final line. Replace N with a whole number from 5 to 1440. The monitor waits that many minutes after your reply ends, then sends the next prompt.";
+const GEMINI_GUIDANCE = "The user's Gemini quota is counted per turn, so maximize meaningful progress toward the goal in each turn. Keep working while useful work remains, including while background jobs run. Use your judgment to advance relevant analysis, research, verification, or housekeeping without disrupting those jobs. Avoid repeated polling, early wrap-ups, and busywork. Request a wait when useful progress genuinely depends on the results.\n\nTo request a wait, end your reply with MONITOR_SLEEP_MINUTES=N on its own final line. Replace N with a whole number from 5 to 1440. The monitor waits that many minutes after your reply ends, then sends the next prompt.";
 
 const HOUSEKEEPING_GUIDANCE =
   "Make the active work easy to find, understand, and maintain. Use your judgment to consolidate scattered work and remove redundant code, tests, docs, or artifacts where it helps. Preserve useful checks, unique evidence, and unrelated work. Finish when the next person or agent can pick up the work easily and further cleanup would add little value.";
