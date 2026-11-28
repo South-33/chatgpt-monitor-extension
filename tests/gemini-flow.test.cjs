@@ -162,6 +162,7 @@ test('only a final valid sleep marker from a completed Gemini reply can delay wo
 
 test('manual activity and pause are respected during a wait', async () => {
   const h = harness(); await h.start();
+  await h.status('', '', { isGenerating: true });
   await h.status('sleep', 'MONITOR_SLEEP_MINUTES=5');
   await h.send({ type: 'setPaused', tabId: 1, paused: true });
   h.advance(300000);
@@ -173,6 +174,30 @@ test('manual activity and pause are respected during a wait', async () => {
   await h.status('', '', { isGenerating: true });
   assert.equal((await h.view()).wakeAt, null);
   assert.equal((await h.view()).isGenerating, true);
+});
+
+test('a fresh Gemini Start ignores the old wait but honors waits from its running reply', async () => {
+  const h = harness(); await h.start();
+  const oldReply = 'Waiting for training.\nMONITOR_SLEEP_MINUTES=18';
+  const first = await h.status('old-sleep', oldReply);
+  assert.equal(first.action, 'sendContinue');
+  assert.equal((await h.view()).wakeAt, null);
+  await h.ack();
+  await h.status('new-sleep', 'MONITOR_SLEEP_MINUTES=5');
+  assert.equal((await h.view()).wakeAt, h.now() + 300000);
+  await h.send({ type: 'setMonitoring', enabled: false, tabId: 1 });
+  await h.start();
+  h.boot();
+  const restarted = await h.status('new-sleep', 'MONITOR_SLEEP_MINUTES=5');
+  assert.equal(restarted.action, 'sendContinue');
+  assert.equal((await h.view()).wakeAt, null);
+
+  await h.send({ type: 'setMonitoring', enabled: false, tabId: 1 });
+  await h.start();
+  assert.equal((await h.status('', '', { isGenerating: true })).action, undefined);
+  h.boot();
+  assert.equal((await h.status('running-finished', oldReply)).action, undefined);
+  assert.equal((await h.view()).wakeAt, h.now() + 1080000);
 });
 
 test('quota pauses stop continuations and retain sanitized banner evidence across restart', async () => {

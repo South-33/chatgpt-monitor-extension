@@ -1027,6 +1027,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const existing = states.get(tabId);
         const state = newState(message.url, null, tabId);
+        state.ignoreInitialSleep = isGeminiUrl(message.url);
         if (!targetMatches(tabId) && existing?.conversationKey === state.conversationKey
             && Number.isFinite(existing.handoffOffsetSeconds)) {
           state.handoffOffsetSeconds = existing.handoffOffsetSeconds;
@@ -1757,6 +1758,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.isGenerating) {
+      // This reply is still running when Start is pressed, so its wait is new.
+      state.ignoreInitialSleep = false;
       // A user-started turn supersedes an outstanding wait.
       if (state.wakeAt) {
         state.wakeAt = null;
@@ -1817,6 +1820,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       state.phase = state.sleepResumePhase || "watching";
       state.sleepResumePhase = null;
       await persistRuntime();
+    }
+    if (state.ignoreInitialSleep && message.responseKey) {
+      // A fresh run must not adopt a wait from the reply already on screen.
+      state.sleepResponseKey = message.responseKey;
+      state.ignoreInitialSleep = false;
     }
     const sleepMinutes = isGeminiUrl(url) && message.latestResponseIsSubstantive !== false
       ? requestedSleepMinutes(message.latestResponseText) : null;
