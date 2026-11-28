@@ -219,7 +219,7 @@ test('resuming after a quota reset retries an unsent automated prompt', async ()
   assert.equal(retry.prompt, action.prompt);
 });
 
-test('Gemini guidance stays at the bottom without changing Continue cadence or shared Goal text', async () => {
+test('Gemini repeats full guidance after four short continuations across rounds and restarts', async () => {
   const h = harness(); await h.start();
   await h.send({ type: 'saveContinuePreset', index: 0, text: 'Finish the agreed experiment.' });
   await h.send({ type: 'saveAgentInstructions', text: '# Style\nKeep language clear.' });
@@ -231,14 +231,63 @@ test('Gemini guidance stays at the bottom without changing Continue cadence or s
   assert.ok(first.prompt.indexOf('Global AGENTS.md') < first.prompt.indexOf(footer));
   assert.ok(first.prompt.endsWith('then sends the next prompt.'));
   await h.ack();
-  const next = await h.status('goal-reply', 'Work remains.', { latestUserText: first.prompt });
-  assert.match(next.prompt, /\n\nContinue\.\n\nGoal contract/);
-  assert.ok(next.prompt.endsWith(footer));
-  assert.equal(next.prompt.split(footer).length - 1, 1);
+  let previous = first;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 1; i <= 4; i++) {
+      const next = await h.status(`goal-${round}-${i}`, 'Work remains.', { latestUserText: `@DevSpace Laptop ${previous.prompt}` });
+      assert.equal(next.prompt, 'Continue.');
+      if (i === 2) {
+        await h.send({ type: 'commandResult', url: geminiUrl, action: 'sendContinue', ok: false, reason: 'send-button-unavailable' });
+        h.advance(60000);
+        h.boot();
+        const retry = await h.status(`goal-${round}-${i}`, 'Work remains.', { latestUserText: previous.prompt, composerEmpty: false });
+        assert.equal(retry.prompt, next.prompt);
+      }
+      await h.ack();
+      if (i === 2) h.boot();
+      previous = next;
+    }
+    const refresh = await h.status(`refresh-${round}`, 'Work remains.', { latestUserText: previous.prompt });
+    assert.equal(refresh.prompt, first.prompt);
+    await h.ack();
+    previous = refresh;
+  }
+  const next = await h.status('next-short', 'Work remains.', { latestUserText: previous.prompt });
+  assert.equal(next.prompt, 'Continue.');
   const logs = await h.send({ type: 'getDiagnostics' });
   assert.equal(logs.events.filter(entry => entry.event === 'action-requested').at(-1).promptMode, 'goal-continue');
   await h.send({ type: 'sendCyclePrompt', tabId: 1, url: geminiUrl, kind: 'housekeeping' });
   assert.ok(h.deliveries.at(-1).message.prompt.endsWith(footer));
   await h.send({ type: 'saveContinuePreset', index: 0, text: first.prompt });
   assert.equal((await h.send({ type: 'getSettings', tabId: 1 })).settings.continuePrompt, 'Finish the agreed experiment.');
+});
+
+test('Gemini refreshes changed instructions immediately and counts only accepted sends', async () => {
+  const h = harness(); await h.start();
+  const first = await h.status('first', 'Work remains.');
+  await h.send({ type: 'commandResult', url: geminiUrl, action: 'sendContinue', ok: false, reason: 'send-button-unavailable' });
+  h.advance(60000);
+  h.boot();
+  const retry = await h.status('first', 'Work remains.');
+  assert.equal(retry.prompt, first.prompt);
+  await h.ack();
+  let next = await h.status('second', 'Work remains.', { latestUserText: first.prompt });
+  assert.equal(next.prompt, 'Continue.');
+  await h.ack();
+  await h.send({ type: 'saveContinuePreset', index: 0, text: 'Verify the updated goal.' });
+  next = await h.status('third', 'Work remains.', { latestUserText: next.prompt });
+  assert.match(next.prompt, /Verify the updated goal/);
+  assert.match(next.prompt, /MONITOR_SLEEP_MINUTES=N/);
+  await h.ack();
+  await h.send({ type: 'saveAgentInstructions', text: '# Style\nUse clear language.' });
+  next = await h.status('fourth', 'Work remains.', { latestUserText: next.prompt });
+  assert.equal(next.prompt.split('Global AGENTS.md').length - 1, 1);
+  await h.ack();
+  const review = await h.status('finished', 'TASK_FINISHED', { latestUserText: next.prompt });
+  await h.ack('sendTerminalReview');
+  await h.status('review-sleep', 'MONITOR_SLEEP_MINUTES=5', { latestUserText: review.prompt });
+  h.advance(300000);
+  const wake = await h.status('review-sleep', 'MONITOR_SLEEP_MINUTES=5', { latestUserText: review.prompt });
+  assert.equal(wake.prompt, review.prompt);
+  assert.equal(wake.prompt.split('Global AGENTS.md').length - 1, 1);
 });

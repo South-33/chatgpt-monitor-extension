@@ -190,9 +190,9 @@ function promptKind(action, prompt) {
   if (action === "sendTerminalReview") return "terminal-review";
   if (action === "sendContinue" && prompt === RECOVERY_CHECK_PROMPT) return "recovery-check";
   if (action === "sendContinue") {
-    if (prompt === cycleTaskPrompt("improve")) return "workflow-review";
-    if (prompt === cycleTaskPrompt("housekeeping")) return "housekeeping";
-    if (prompt === GOAL_CONTINUATION) return "goal-continue";
+    if (prompt === cycleTaskPrompt("improve") || prompt === "Continue the Improve contract.") return "workflow-review";
+    if (prompt === cycleTaskPrompt("housekeeping") || prompt === "Continue the Housekeeping contract.") return "housekeeping";
+    if (prompt === GOAL_CONTINUATION || prompt === "Continue.") return "goal-continue";
     return "custom-continue";
   }
   if (action === "sendHandoff") return "handoff";
@@ -567,20 +567,34 @@ function validHandoffText(text) {
 }
 
 function nextAction(state, phase, name, prompt) {
-  const mode = promptKind(name, prompt);
+  let mode = promptKind(name, prompt);
   const retry = state.nextActionSource === "action-retry" && prompt === state.actionPrompt;
   if (!retry) {
-    if (prompt && isGeminiUrl(state.url)) prompt = promptWithoutGeminiGuidance(prompt);
+    const gemini = prompt && isGeminiUrl(state.url);
+    if (gemini) prompt = promptWithoutInstructions(prompt);
     state.pendingInstructionRefreshAt = null;
-    if (prompt && settings.globalAgentInstructions) {
+    state.pendingGeminiPrompt = null;
+    if (gemini) {
+      const fullPrompt = prompt + globalInstructionSuffix()
+        + (mode === "housekeeping" ? housekeepingGitSuffix(Boolean(settings.globalAgentInstructions)) : "")
+        + `\n\n${GEMINI_GUIDANCE}`;
+      const previous = state.geminiPrompt;
+      const compact = name === "sendContinue" && mode !== "recovery-check"
+        && previous?.prompt === fullPrompt && previous.shortTurns < 4;
+      prompt = compact
+        ? (mode === "housekeeping" ? "Continue the Housekeeping contract."
+          : mode === "workflow-review" ? "Continue the Improve contract." : "Continue.")
+        : fullPrompt;
+      if (compact) mode = promptKind(name, prompt);
+      state.pendingGeminiPrompt = { prompt: fullPrompt, shortTurns: compact ? previous.shortTurns + 1 : 0 };
+    } else if (prompt && settings.globalAgentInstructions) {
       const worked = workedTotal(state);
       if (worked - (state.instructionRefreshAt || 0) >= INSTRUCTION_REFRESH_SECONDS) {
         prompt += globalInstructionSuffix();
         state.pendingInstructionRefreshAt = worked;
       }
     }
-    if (mode === "housekeeping") prompt += housekeepingGitSuffix(state.pendingInstructionRefreshAt != null);
-    if (prompt && isGeminiUrl(state.url)) prompt += `\n\n${GEMINI_GUIDANCE}`;
+    if (!gemini && mode === "housekeeping") prompt += housekeepingGitSuffix(state.pendingInstructionRefreshAt != null);
   }
   if (state.phase !== phase) state.sendFailures = 0;
   state.retryAt = null;
@@ -599,7 +613,8 @@ function nextAction(state, phase, name, prompt) {
     action: name,
     promptMode: mode,
     observedTerminal: name === "sendTerminalReview" ? state.terminalReviewKind : undefined,
-    instructionsAttached: state.pendingInstructionRefreshAt != null,
+    instructionsAttached: state.pendingInstructionRefreshAt != null
+      || Boolean(state.pendingGeminiPrompt && prompt.includes(GLOBAL_INSTRUCTIONS_HEADER)),
     phase,
   });
   return { action: name, prompt };
@@ -672,7 +687,8 @@ function cycleStage(tabId, task) {
 }
 
 function goalPromptForState(state) {
-  return state?.goalTurns ? GOAL_CONTINUATION : continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)));
+  return state?.goalTurns && !isGeminiUrl(state.url) ? GOAL_CONTINUATION
+    : continuationPrompt(customContinueText(continuePromptForTab(state?.tabId)));
 }
 
 function finishGoalTurn(state) {
@@ -688,8 +704,8 @@ function advanceGoalRound(state) {
 }
 
 function isGoalPrompt(text) {
-  return promptWithoutInstructions(text).replace(/\s+/g, " ").trim()
-    .endsWith(GOAL_CONTRACT.replace(/\s+/g, " "));
+  const prompt = promptWithoutInstructions(text).replace(/\s+/g, " ").trim();
+  return sameSubmittedPrompt(prompt, "Continue.") || prompt.endsWith(GOAL_CONTRACT.replace(/\s+/g, " "));
 }
 
 function requestContinue(state, prompt, source = "automatic") {
@@ -743,6 +759,10 @@ function markTransientActionAccepted(state) {
   if (state.pendingInstructionRefreshAt != null) {
     state.instructionRefreshAt = state.pendingInstructionRefreshAt;
     state.pendingInstructionRefreshAt = null;
+  }
+  if (state.pendingGeminiPrompt) {
+    state.geminiPrompt = state.pendingGeminiPrompt;
+    state.pendingGeminiPrompt = null;
   }
   if (state.phase === "sending-handoff") state.phase = "waiting-for-handoff";
   if (state.phase === "sending-terminal-review") state.phase = "waiting-for-terminal-review";
@@ -1189,7 +1209,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "The conversation changed. Open the popup and try again." });
           return;
         }
-        const prompt = basePrompt + (message.kind === "housekeeping" ? housekeepingGitSuffix() : "")
+        const prompt = basePrompt + (isGeminiUrl(tab.url) ? globalInstructionSuffix() : "")
+          + (message.kind === "housekeeping" ? housekeepingGitSuffix(isGeminiUrl(tab.url) && Boolean(settings.globalAgentInstructions)) : "")
           + (isGeminiUrl(tab.url) ? `\n\n${GEMINI_GUIDANCE}` : "");
         const deliver = () => chrome.tabs.sendMessage(tabId, {
           type: "sendCyclePrompt", prompt, expectedUrl: message.url,
@@ -1230,6 +1251,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.cycleTask = message.kind;
           state.goalTurnPending = false;
           state.pendingInstructionRefreshAt = null;
+          state.pendingGeminiPrompt = isGeminiUrl(tab.url) ? { prompt, shortTurns: 0 } : null;
           state.actionSource = "";
           state.actionPromptMode = "none";
           state.recoveryCheckPrompt = "";
@@ -1612,7 +1634,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           phase: state.phase,
           reason: message.ok ? undefined : message.reason || "unknown",
           success: Boolean(message.ok),
-          instructionsAttached: state.pendingInstructionRefreshAt != null,
+          instructionsAttached: state.pendingInstructionRefreshAt != null
+            || Boolean(state.pendingGeminiPrompt && state.actionPrompt.includes(GLOBAL_INSTRUCTIONS_HEADER)),
           attempt: (state.sendFailures || 0) + 1,
         });
         state.actionSource = "";
@@ -2084,7 +2107,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (state.cycleTask && !reconsidering && message.latestResponseIsSubstantive !== false) {
       const marker = state.cycleTask.toUpperCase();
-      const matchingPrompt = !message.latestUserText || (
+      const matchingPrompt = !message.latestUserText
+        || (isGeminiUrl(state.url) && sideTask && sameSubmittedPrompt(message.latestUserText,
+          `Continue the ${state.cycleTask === "housekeeping" ? "Housekeeping" : "Improve"} contract.`)) || (
         message.latestUserText.includes(`${marker}_FINISHED`)
         && message.latestUserText.includes(`${marker}_BLOCKED`)
       );

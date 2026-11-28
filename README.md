@@ -16,7 +16,7 @@ Gemini prompts explain how to request a wait: end the reply with `MONITOR_SLEEP_
 
 The Gemini quota guard pauses until you Resume. It recognizes the observed full quota banner and compact “Limit reached · Resets …” notice, with a text-based fallback near the composer. The last ten distinct observations are kept locally and included in **Logs** downloads, retaining the reset text and basic element structure while excluding chat text, page URLs, and email addresses.
 
-Each round starts with your custom **Goal** prompt, followed by two short **Continue** prompts under the Goal contract. A Goal turn counts once it receives a reply or the watchdog confirms it stopped. **Improve** and **Housekeeping** run in that order when enabled and repeat until they report finished or blocked. A Goal finish or block starts **Reconsider**.
+ChatGPT rounds start with your custom **Goal** prompt, followed by two **Continue** prompts under the Goal contract. Gemini sends a full prompt, then four short continuations before refreshing the full prompt. A changed Goal or imported instructions, or a new stage, refreshes it immediately. Its quota, sleep, and imported instructions appear only in full prompts. Only accepted sends advance this count, which survives monitor restarts. A Goal turn counts once it receives a reply or the watchdog confirms it stopped. **Improve** and **Housekeeping** run in that order when enabled, after each three Goal turns, and repeat until they report finished or blocked. A Goal finish or block starts **Reconsider**, which keeps its full verification prompt.
 Hover over the cycle number for the current stage. Either arrow stops the current reply and starts its review. On an off tab, monitoring lasts only for that review.
 
 **Pause** keeps elapsed time. **Handoff** starts a fresh chat with a checkpoint. Handoff defaults to 150 minutes. Changes to **Thinking** and **Handoff** apply to the current tab until it closes or the browser session ends. Drag the top slider to adjust elapsed time toward the next handoff, even before monitoring starts.
@@ -25,6 +25,6 @@ The monitor pauses when ChatGPT shows the conversation length limit. Start a new
 
 Open **Logs** to choose a folder for JSONL diagnostics or download a copy. New files are split by day and tab ID. The logs exclude chat text and page URLs.
 
-Import your global `AGENTS.md` from **Logs** to include its Git section in Housekeeping. The bundled example is used when there is no imported Git section. Fresh handoffs include the global instructions, and the next automated prompt refreshes them after about 28 minutes of tracked work.
+Import your global `AGENTS.md` from **Logs** to include its Git section in Housekeeping. The bundled example is used when there is no imported Git section. ChatGPT fresh handoffs include the global instructions, and the next automated prompt refreshes them after about 28 minutes of tracked work. Gemini includes them in its full prompts.
 
 Run the tests with `node --test tests/*.test.cjs`.
