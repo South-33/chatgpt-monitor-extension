@@ -14,7 +14,7 @@ Gemini prompts explain how to request a wait: end the reply with `MONITOR_SLEEP_
 
 **Improve** defaults to off for each tab. Its saved per-tab choice is retained across popup reopenings and extension restarts; an old global value cannot turn it on in new tabs.
 
-The Gemini quota guard looks for an exhausted usage/quota notice near the composer and pauses until you Resume. Its first real-banner match still needs field verification. The last ten distinct banner observations are kept locally and included in **Logs** downloads, with banner text and basic element structure, excluding chat text, page URLs, and email addresses. This evidence lets a later update use the actual quota UI rather than assumptions.
+The Gemini quota guard pauses until you Resume. It recognizes the observed full quota banner and compact “Limit reached · Resets …” notice, with a text-based fallback near the composer. The last ten distinct observations are kept locally and included in **Logs** downloads, retaining the reset text and basic element structure while excluding chat text, page URLs, and email addresses.
 
 Each round starts with your custom **Goal** prompt, followed by two short **Continue** prompts under the Goal contract. A Goal turn counts once it receives a reply or the watchdog confirms it stopped. **Improve** and **Housekeeping** run in that order when enabled and repeat until they report finished or blocked. A Goal finish or block starts **Reconsider**.
 Hover over the cycle number for the current stage. Either arrow stops the current reply and starts its review. On an off tab, monitoring lasts only for that review.

@@ -33,17 +33,25 @@
       if (!root) return null;
       const disabled = !composer || composer.getAttribute('contenteditable') === 'false'
         || composer.getAttribute('aria-disabled') === 'true' || composer.disabled;
-      const candidates = [...root.querySelectorAll('[role="alert"], [role="status"], div, p, span')]
+      const knownBanners = 'gemini-quota-banner, .inline-upgrade-banner-row';
+      const candidates = [...root.querySelectorAll(`${knownBanners}, [role="alert"], [role="status"], div, p, span`)]
         .filter(node => visible(node) && !node.closest('.conversation-container, model-response, user-query, rich-textarea, pre, code')
           && !node.querySelector('.conversation-container, model-response, user-query, rich-textarea, pre, code')
           && !node.contains(input) && isQuotaNotice(node.innerText || node.textContent, disabled));
-      const notice = candidates.find(node => !candidates.some(other => other !== node && node.contains(other)));
+      const notice = candidates.find(node => node.matches(knownBanners))
+        || candidates.find(node => !candidates.some(other => other !== node && node.contains(other)));
       if (!notice) return null;
+      const title = notice.querySelector('[data-test-id="gem-banner-title-input"]');
+      const description = notice.querySelector('[data-test-id="gem-banner-description-input"]');
+      const inlineText = notice.querySelector('.inline-upgrade-banner-text');
+      const text = title
+        ? [title, description].filter(Boolean).map(node => node.innerText || node.textContent).join(' ')
+        : (inlineText || notice).innerText || (inlineText || notice).textContent;
       const describe = node => {
         const classes = [...node.classList].filter(name => !name.startsWith('ng-')).slice(0, 8).join('.');
         return `${node.tagName.toLowerCase()}${classes ? '.' + classes : ''} role=${node.getAttribute('role') || 'none'}`;
       };
-      return { text: (notice.innerText || notice.textContent).replace(/\s+/g, ' ').trim(),
+      return { text: text.replace(/\s+/g, ' ').trim(),
         structure: [notice.parentElement, notice].filter(Boolean).map(describe).join(' > '),
         composerDisabled: Boolean(disabled) };
     },

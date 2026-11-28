@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Monitor for ChatGPT and Gemini",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Continues ChatGPT and Gemini tasks with guarded prompts, work tracking, and timed waits.",
   "permissions": ["storage", "scripting", "alarms", "tabs", "power"],
   "host_permissions": [

@@ -88,6 +88,7 @@ test('quota evidence comes from the composer area and excludes conversation text
     getBoundingClientRect: () => ({ width: 200, height: 40 }),
     getAttribute: name => name === 'role' ? 'alert' : null,
     closest: () => inChat ? {} : null,
+    matches: () => false,
     querySelector: () => containsChat ? {} : null,
     contains: () => false,
   });
@@ -108,4 +109,39 @@ test('quota evidence comes from the composer area and excludes conversation text
   assert.equal(evidence.structure, 'div.usage-banner role=alert');
   nodes = [wrapper, chat];
   assert.equal(ctx.AgentMonitorGemini.quotaEvidence(), null);
+});
+
+test('observed Gemini quota banners retain reset details without action buttons or duplicate screen-reader text', () => {
+  const title = 'You’ve reached your current usage limit';
+  const reset = 'Tasks will be available again on Nov 28 at 2:29 PM, or upgrade for higher limits.';
+  const node = (text, tagName = 'DIV') => ({
+    innerText: text, textContent: text, tagName, classList: [],
+    getBoundingClientRect: () => ({ width: 300, height: 40 }),
+    getAttribute: () => null, closest: () => null, contains: () => false,
+    matches: () => false, querySelector: () => null,
+  });
+  const heading = node(title, 'H2');
+  const description = node(reset);
+  const fullBanner = node(`${title}\n${reset}\nSee usage\nUpgrade`, 'GEMINI-QUOTA-BANNER');
+  fullBanner.matches = selector => selector.includes('gemini-quota-banner');
+  fullBanner.querySelector = selector => ({
+    '[data-test-id="gem-banner-title-input"]': heading,
+    '[data-test-id="gem-banner-description-input"]': description,
+  })[selector] || null;
+  let candidates = [node(title), fullBanner];
+  const root = { querySelectorAll: () => candidates };
+  const input = { parentElement: { parentElement: root } };
+  const composer = { closest: () => input, getAttribute: name => name === 'contenteditable' ? 'false' : null };
+  const ctx = { location: { hostname: 'gemini.google.com' },
+    document: { querySelector: () => composer }, getComputedStyle: () => ({ visibility: 'visible' }) };
+  vm.runInNewContext(adapter, ctx);
+  assert.equal(ctx.AgentMonitorGemini.quotaEvidence().text, `${title} ${reset}`);
+  assert.equal(ctx.AgentMonitorGemini.quotaEvidence().composerDisabled, true);
+
+  const compactText = 'Limit reached · Resets 2:29 PM';
+  const compact = node(`Limit reached. Resets 2:29 PM ${compactText} See usage Upgrade`);
+  compact.matches = selector => selector.includes('.inline-upgrade-banner-row');
+  compact.querySelector = selector => selector === '.inline-upgrade-banner-text' ? node(compactText) : null;
+  candidates = [compact];
+  assert.equal(ctx.AgentMonitorGemini.quotaEvidence().text, compactText);
 });
