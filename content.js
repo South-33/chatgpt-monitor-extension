@@ -264,6 +264,7 @@ function conversationLimitReached() {
 }
 
 function hasBlockingUi() {
+  if (globalThis.AgentMonitorGemini?.quotaEvidence()) return true;
   return pendingToolApproval() || Boolean(materializationDialog()) || blockingUiRunning || conversationLimitReached();
 }
 
@@ -412,6 +413,7 @@ function publishThinkingNoticeTimer(startedAt) {
 function isConversationPage() {
   try {
     const parsed = new URL(location.href);
+    if (parsed.hostname === "gemini.google.com") return /^(?:\/u\/\d+)?\/app\/[^/]+\/?$/.test(parsed.pathname);
     const chatHost = parsed.hostname === "chatgpt.com" || parsed.hostname === "chat.openai.com";
     return chatHost &&
       (parsed.pathname.startsWith("/c/") || parsed.searchParams.get("temporary-chat") === "true");
@@ -610,6 +612,7 @@ function followLatestConversation() {
 }
 
 async function recoverExtendedThinking() {
+  if (globalThis.AgentMonitorGemini) return false;
   if (!extendedThinkingTimedOut()) return false;
   const expectedUrl = location.href;
   extendedThinkingRecoveryRequested = true;
@@ -638,6 +641,7 @@ async function recoverExtendedThinking() {
 }
 
 function findComposer() {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.editor();
   const known = [...document.querySelectorAll(
     "#prompt-textarea, textarea[placeholder*='Message'], textarea[placeholder*='Ask'], [contenteditable='true'][role='textbox']",
   )].filter(visible).at(-1) || null;
@@ -651,6 +655,7 @@ function findComposer() {
 }
 
 function assistantTurns() {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.turns();
   const modern = [...document.querySelectorAll(
     '[data-testid^="conversation-turn"][data-turn="assistant"]',
   )];
@@ -663,6 +668,7 @@ function assistantTurns() {
 }
 
 function responseFromTurn(turn) {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.response(turn);
   if (!turn) return { text: "", substantive: false, turn: null };
 
   if (turn.hasAttribute('data-turn-key')) {
@@ -711,6 +717,7 @@ function terminalMarker(text) {
 }
 
 function latestAssistantResponse() {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.latestResponse();
   const currentTurn = [...document.querySelectorAll('[data-turn-key]')].at(-1);
   if (currentTurn) {
     // Final-answer containers identify the speaker. Localized/changed headings
@@ -721,6 +728,7 @@ function latestAssistantResponse() {
 }
 
 function latestUserText() {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.latestUserText();
   const modern = [...document.querySelectorAll(
     '[data-testid^="conversation-turn"][data-turn="user"] [data-message-author-role="user"]',
   )];
@@ -736,6 +744,7 @@ function latestUserText() {
 }
 
 function streamRecoveryFailure() {
+  if (globalThis.AgentMonitorGemini) return null;
   const turn = [...document.querySelectorAll('[data-turn-key], [data-testid^="conversation-turn"]')].at(-1)
     || document.querySelector('main');
   if (!turn || isGenerating()) return null;
@@ -764,6 +773,7 @@ function streamRecoveryFailure() {
 }
 
 function incompleteTurnKey() {
+  if (globalThis.AgentMonitorGemini) return isGenerating() ? "" : globalThis.AgentMonitorGemini.incompleteTurnKey();
   const turn = [...document.querySelectorAll('[data-turn-key], [data-testid^="conversation-turn"]')].at(-1)
     || assistantTurns().at(-1) || document.querySelector('main');
   if (!turn || !visible(findComposer()) || isGenerating()) {
@@ -821,6 +831,7 @@ function collectWorkedEntries(entries = new Map()) {
 }
 
 function workedSeconds(force = false) {
+  if (globalThis.AgentMonitorGemini) return 0; // Gemini work time comes from generation heartbeats.
   const now = Date.now();
   if (workedScanUrl !== location.href) {
     workedScanUrl = location.href;
@@ -849,6 +860,7 @@ async function waitFor(predicate, timeoutMs = 10000) {
 }
 
 function composerScope(composer = findComposer()) {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.scope();
   return composer?.closest("form") || composer?.parentElement?.parentElement || document;
 }
 
@@ -892,6 +904,7 @@ function pluginControlLabel(element) {
 }
 
 function pluginSelected() {
+  if (globalThis.AgentMonitorGemini) return globalThis.AgentMonitorGemini.connectorSelected(isPluginLabel);
   const composer = findComposer();
   if (!composer) return false;
   if ([...composer.querySelectorAll("[app-mention-name][contenteditable='false']")]
@@ -954,6 +967,10 @@ async function selectPluginResult() {
 }
 
 async function selectConfiguredPlugin() {
+  if (globalThis.AgentMonitorGemini) {
+    return globalThis.AgentMonitorGemini.selectConnector({ matches: isPluginLabel,
+      composerText, setComposerText, waitFor, canAct: geminiCanAct });
+  }
   if (pluginSelected()) return true;
   const composer = findComposer();
   if (!composer) return false;
@@ -995,7 +1012,7 @@ function comparableText(text) {
 function pluginPrefixPattern() {
   const custom = String(typeof configuredPluginName === "string" ? configuredPluginName : "")
     .trim().toLowerCase().replace(/[^a-z0-9\s]+/g, "").replace(/\s+/g, "\\s*");
-  return new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})\\s+`, "i");
+  return new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})(?:\\s+Laptop)?\\s+`, "i");
 }
 
 function latestUserMatchesPrompt(expectedPrompt) {
@@ -1016,7 +1033,7 @@ function composerText(composer) {
   // A selected plugin mention is an embedded, non-editable editor node. Its
   // visible name is NOT a user draft. Ignoring only impression links missed
   // [app-mention-name], so fresh-chat handoff appeared to have existing text.
-  const pluginSelector = "[app-mention-name][contenteditable='false'], [data-composer-plugin-impression-id], a[href*='/plugins/']";
+  const pluginSelector = "[app-mention-name][contenteditable='false'], [data-composer-plugin-impression-id], a[href*='/plugins/'], .inline-chip[data-chip-raw-text]";
   if (!composer.querySelector(pluginSelector)) {
     return normalizedText(composer.innerText ?? composer.textContent ?? "");
   }
@@ -1124,7 +1141,7 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     return false;
   }
   const modelReady = await applyModelPreferences(ownership, cyclePrompt);
-  const needsHandoffModel = requirePlugin && ownership.enforceModelPreferences !== false
+  const needsHandoffModel = !globalThis.AgentMonitorGemini && requirePlugin && ownership.enforceModelPreferences !== false
     && (ownership.preferredModel || ownership.preferredReasoning);
   const modelSettled = modelReady && (!needsHandoffModel
     || await waitForHandoffModel(composer, expectedUrl, ownership, cyclePrompt));
@@ -1138,6 +1155,10 @@ async function submitComposer(composer, expectedUrl = location.href, requirePlug
     // select the plugin again through the empty composer.
     await clearComposer(composer);
     lastPromptFailureReason = 'plugin-selection-lost';
+    return false;
+  }
+  if (globalThis.AgentMonitorGemini && !globalThis.AgentMonitorGemini.taskSelected()) {
+    lastPromptFailureReason = 'task-mode-required';
     return false;
   }
   if (!modelReady) {
@@ -1284,6 +1305,14 @@ async function waitForHandoffModel(composer, url, { preferredModel: model, prefe
 }
 
 async function applyModelPreferences(preferences, cyclePrompt) {
+  if (globalThis.AgentMonitorGemini) {
+    const expectedUrl = location.href;
+    const ok = await globalThis.AgentMonitorGemini.applyModel(preferences, {
+      waitFor, canAct: async () => sameConversation(expectedUrl) && await geminiCanAct(cyclePrompt, preferences),
+    });
+    if (!ok) lastPromptFailureReason = 'model-unavailable';
+    return ok;
+  }
   if (preferences.enforceModelPreferences === false) return true;
   const model = preferences.preferredModel || '';
   const reasoning = preferences.preferredReasoning || '';
@@ -1374,6 +1403,13 @@ async function applyModelPreferences(preferences, cyclePrompt) {
   return success;
 }
 
+async function geminiCanAct(cyclePrompt = false, preferences = null) {
+  const current = await sendRuntime({ type: 'isTargetTab', cyclePrompt });
+  return !stopped && current?.target && !current.paused && !isGenerating() && !hasBlockingUi()
+    && (!preferences || (current.preferredModel === preferences.preferredModel
+      && current.enforceModelPreferences === preferences.enforceModelPreferences));
+}
+
 async function sendPrompt(text, requirePlugin = false, cyclePrompt = false) {
   lastPromptFailureReason = 'unknown';
   const expectedUrl = location.href;
@@ -1394,6 +1430,31 @@ async function sendPrompt(text, requirePlugin = false, cyclePrompt = false) {
   if (hasBlockingUi() || !sameConversation(expectedUrl)) {
     lastPromptFailureReason = 'composer-blocked';
     return false;
+  }
+  if (globalThis.AgentMonitorGemini) {
+    requirePlugin = true;
+    const canAct = async () => sameConversation(expectedUrl) && await geminiCanAct(cyclePrompt);
+    if (!await globalThis.AgentMonitorGemini.ensureTask({ waitFor, canAct })) {
+      lastPromptFailureReason = 'task-mode-required';
+      return false;
+    }
+    if (!pluginSelected()) {
+      const draft = composerText(findComposer());
+      if (draft && draft !== '@' && comparableText(draft) !== comparableText(requested)) {
+        lastPromptFailureReason = 'composer-has-draft';
+        return false;
+      }
+      // Retry only our unchanged failed draft or mention prefix, never user input.
+      if (draft && (draft === '@' || comparableText(draft) === comparableText(requested))) {
+        if (!await canAct() || !await clearComposer(findComposer())) return false;
+      }
+      if (!await canAct() || !await globalThis.AgentMonitorGemini.selectConnector({
+        matches: isPluginLabel, composerText, setComposerText, waitFor, canAct,
+      })) {
+        lastPromptFailureReason = 'plugin-selection-lost';
+        return false;
+      }
+    }
   }
   if (requirePlugin && !pluginSelected()) {
     lastPromptFailureReason = 'plugin-selection-lost';
@@ -1502,7 +1563,8 @@ async function waitForSettledAssistantResponse(timeoutMs = 8000, stableMs = 2000
 
 function captureResponse(response = latestAssistantResponse()) {
   const turnId = response.turn?.getAttribute("data-testid")
-    || response.turn?.getAttribute("data-turn-key") || "";
+    || response.turn?.getAttribute("data-turn-key")
+    || (globalThis.AgentMonitorGemini && response.turn?.closest('.conversation-container')?.id) || "";
   const responseKey = response.text
     ? `${turnId}:${fingerprint(response.text)}`
     : turnId
@@ -1512,6 +1574,7 @@ function captureResponse(response = latestAssistantResponse()) {
 }
 
 async function openNewChat() {
+  if (globalThis.AgentMonitorGemini) return false;
   const before = location.href;
   const control = [...document.querySelectorAll("a, button")]
     .filter(visible)
@@ -1653,6 +1716,21 @@ async function scan() {
     }
 
     if (tabRole.paused) { resetExtendedThinking("monitor-reset"); return; }
+    if (globalThis.AgentMonitorGemini && !isGenerating()) {
+      const evidence = globalThis.AgentMonitorGemini.quotaEvidence();
+      if (evidence) {
+        await sendRuntime({ type: 'setPaused', paused: true, reason: 'usage-limit', evidence, url: scannedUrl });
+        return;
+      }
+    }
+    if (globalThis.AgentMonitorGemini && !globalThis.AgentMonitorGemini.taskSelected()) {
+      const expectedUrl = location.href;
+      const canAct = async () => sameConversation(expectedUrl) && await geminiCanAct();
+      if (!await globalThis.AgentMonitorGemini.ensureTask({ waitFor, canAct })) {
+        await sendRuntime({ type: 'setPaused', paused: true, reason: 'task-mode-required', url: scannedUrl });
+        return;
+      }
+    }
     if (conversationLimitReached()) {
       resetExtendedThinking("monitor-reset");
       await sendRuntime({ type: "setPaused", paused: true, reason: "conversation-limit", url: scannedUrl });
@@ -1818,6 +1896,7 @@ function handleVisibilityChange() {
 }
 
 function handleRuntimeMessage(message, _sender, sendResponse) {
+  if (message.type === 'wakeMonitor') { scheduleScan(0); sendResponse({ ok: true }); return false; }
   const cyclePrompt = message.type === "sendCyclePrompt";
   if (!cyclePrompt && message.type !== "manualSwap") return false;
   if (cyclePrompt) lastPromptFailureReason = "unknown";

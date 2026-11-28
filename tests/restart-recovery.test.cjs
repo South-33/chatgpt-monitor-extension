@@ -54,6 +54,7 @@ function boot() {
   const sender = { tab: { id: 41, url } };
   let send = boot();
   await send({ type: "setMonitoring", enabled: true, tabId: 41, url });
+  await send({ type: "saveSettings", tabId: 41, settings: { thresholdMinutes: 130 } });
 
   await send({ type: "historyScanComplete", url, workedSeconds: 7800 }, sender);
   let action = await send({
@@ -108,6 +109,7 @@ function boot() {
   await send({ type: "handoffDelivered", url: freshSender.tab.url }, freshSender);
   status = await send({ type: "getMonitorStatus", tabId: 41, url: freshSender.tab.url });
   assert.equal(status.phase, "watching");
+  assert.equal(status.thresholdMinutes, 130, "handoff keeps the same tab's timer limit");
 
 
   console.log("restart_recovery_ok");

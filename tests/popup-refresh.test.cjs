@@ -12,6 +12,7 @@ const end = source.indexOf('function renderPresetButtons()', start);
   let requests = 0;
   const renders = [];
   const sandbox = {
+    configureProvider() {},
     findActiveTab: async () => ({ id: 1, url: 'https://chatgpt.com/c/test' }),
     chrome: { runtime: { sendMessage() {
       requests++;

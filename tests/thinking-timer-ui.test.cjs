@@ -44,7 +44,9 @@ const controls = Object.fromEntries([
   "pauseButton", "swapButton", "logFolderStatus", "chooseLogFolderButton",
 ].map(name => [name, {}]));
 const statusSandbox = {
-  ...controls, threshold: { value: 400 }, activeTab: { url: "https://chatgpt.com/c/test" },
+  ...controls, threshold: { value: 400 }, thinkingMinutes: {}, settingsLoaded: true,
+  settingsTimer: null, pendingControlWrites: 0, document: { activeElement: null },
+  activeTab: { url: "https://chatgpt.com/c/test" },
   cycleStage: { setAttribute() {} },
   sendNowButtons: [{}, {}], sendingCyclePrompt: false,
   progress: {}, handoffEdit: null,
@@ -69,3 +71,10 @@ statusSandbox.sendingCyclePrompt = false;
 statusSandbox.renderStatus({ ...blocked, cycleStage: { step: 4, total: 4, label: "Housekeeping" } });
 assert.equal(statusSandbox.cycleStage.textContent, "4/4");
 assert.match(statusSandbox.cycleStage.title, /Housekeeping/);
+statusSandbox.renderStatus({ ...blocked, thresholdMinutes: 25, extendedThinkingLimitMs: 180000 });
+assert.equal(statusSandbox.threshold.value, 25);
+assert.equal(statusSandbox.thinkingMinutes.value, 3);
+statusSandbox.document.activeElement = statusSandbox.threshold;
+statusSandbox.threshold.value = 40;
+statusSandbox.renderStatus({ ...blocked, thresholdMinutes: 25, extendedThinkingLimitMs: 180000 });
+assert.equal(statusSandbox.threshold.value, 40, "status refresh must preserve a timer edit");

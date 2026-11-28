@@ -10,11 +10,13 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
   let now = 100000;
   let listener;
   const local = {};
+  const session = {};
   const chrome = {
     runtime: { onInstalled: event(), onStartup: event(), onMessage: { addListener(fn) { listener = fn; } } },
     storage: {
       local: { async get(key) { return { [key]: local[key] }; }, async set(value) { Object.assign(local, value); } },
-      session: { async get() { return {}; } }, onChanged: event(),
+      session: { async get(key) { return { [key]: session[key] }; }, async set(value) { Object.assign(session, value); } },
+      onChanged: event(),
     },
     scripting: { async executeScript() {} },
     tabs: { async get(id) { return { id, url: 'https://chatgpt.com/c/test' }; }, onRemoved: event() },
@@ -28,7 +30,7 @@ async function scenario({ error, baseline = 0, interruption = false, deliveryTim
   const sender = { tab: { id: 1, url: 'https://chatgpt.com/c/test' } };
   const send = message => new Promise(resolve => listener(message, sender, resolve));
   await send({ type: 'setMonitoring', enabled: true, tabId: 1, url: sender.tab.url });
-  await send({ type: 'saveSettings', settings: { thresholdMinutes: 1 } });
+  await send({ type: 'saveSettings', tabId: 1, settings: { thresholdMinutes: 1 } });
   let generating = false;
   let draft = interruption || deliveryTimeout ? 'Unsent draft' : '';
   const actions = [];

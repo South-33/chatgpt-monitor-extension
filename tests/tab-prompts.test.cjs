@@ -5,8 +5,9 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 const local = {};
+const browserSession = {};
 const event = () => ({ addListener() {} });
-function worker() {
+function worker(session = browserSession) {
   let listener;
   let removed;
   const deliveries = [];
@@ -18,7 +19,10 @@ function worker() {
     storage: { local: {
       async get(key) { return { [key]: structuredClone(local[key]) }; },
       async set(value) { Object.assign(local, structuredClone(value)); },
-    }, session: { async get() { return {}; } }, onChanged: event() },
+    }, session: {
+      async get(key) { return { [key]: structuredClone(session[key]) }; },
+      async set(value) { Object.assign(session, structuredClone(value)); },
+    }, onChanged: event() },
     scripting: { async executeScript({ target }) { attachments.push(target.tabId); } },
     tabs: { async get(id) { return { id, url: `https://chatgpt.com/c/${id}` }; },
       async sendMessage(id, message, options) {
@@ -289,5 +293,32 @@ function worker() {
   assert.equal((await refreshStatus('past-threshold', 1700)).prompt, refresh.prompt);
   await harness.send({ type: 'commandResult', action: 'sendContinue', ok: true, url: refreshUrl }, refreshSender);
   assert.doesNotMatch((await refreshStatus('after-refresh', 1800)).prompt, /Global AGENTS\.md/);
+
+  const timerStatuses = [];
+  for (const tabId of [7, 8]) {
+    const url = `https://chatgpt.com/c/${tabId}`;
+    await harness.send({ type: 'setMonitoring', enabled: true, tabId, url });
+  }
+  await harness.send({ type: 'saveSettings', tabId: 7, settings: { thresholdMinutes: 30, thinkingMinutes: 5 } });
+  await harness.send({ type: 'saveSettings', tabId: 7, settings: { preferredReasoning: 'medium' } });
+  harness = worker();
+  for (const tabId of [7, 8]) {
+    const url = `https://chatgpt.com/c/${tabId}`;
+    const sender = { tab: { id: tabId, url } };
+    await harness.send({ type: 'setHandoffProgress', tabId, url, minutes: 40 });
+    await harness.send({ type: 'status', url, isGenerating: true }, sender);
+    const status = await harness.send({ type: 'getMonitorStatus', tabId, url });
+    const { thinkingMinutes } = await harness.send({ type: 'isTargetTab' }, sender);
+    timerStatuses.push([status.thresholdMinutes, status.extendedThinkingLimitMs, status.phase,
+      Math.floor(status.handoffSeconds / 60), thinkingMinutes]);
+  }
+  assert.deepEqual(timerStatuses, [
+    [30, 300000, 'threshold-waiting', 30, 5],
+    [150, 600000, 'working', 40, 10],
+  ]);
+  const freshSession = worker({});
+  assert.equal((await freshSession.send({ type: 'getSettings', tabId: 7 })).settings.thresholdMinutes, 150);
+  await harness.remove(7);
+  assert.equal((await harness.send({ type: 'getSettings', tabId: 7 })).settings.thresholdMinutes, 150);
   console.log('tab_prompts_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

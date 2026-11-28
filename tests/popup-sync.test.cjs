@@ -19,7 +19,7 @@ function popup(tabId, index) {
       sandbox.preferredModel.disabled = !sandbox.enforceModelPreferences.checked;
       sandbox.preferredReasoning.disabled = !sandbox.enforceModelPreferences.checked;
     },
-    promptTimer: null, thresholdTimer: null, pendingPromptWrites: 0,
+    promptTimer: null, settingsTimer: null, pendingPromptWrites: 0,
     switchingPreset: false, saveFailed: false, saveQueue: Promise.resolve(),
     promptState: { textContent: '' }, showNotice: message => { throw new Error(message); },
     presets: ['one', 'two', 'three', 'four'], activePreset: index,
@@ -47,7 +47,7 @@ assert.equal(right.sandbox.continuePrompt.value, 'updated two');
 assert.equal(right.sandbox.activePreset, 1, 'shared text must not synchronize selected slots');
 assert.equal(right.sandbox.preferredModel.value, 'GPT-5.6 Sol');
 assert.equal(left.sandbox.preferredReasoning.value, 'high');
-left.update({ ...settings, enforceModelPreferences: false, reviewWorkflow: true });
+left.update({ ...settings, enforceModelPreferences: false, tabControls: { 1: { reviewWorkflow: true } } });
 assert.equal(left.sandbox.reviewWorkflow.checked, true);
 assert.equal(left.sandbox.enforceModelPreferences.checked, false);
 assert.equal(left.sandbox.preferredModel.disabled, true);
@@ -81,12 +81,32 @@ assert.equal(right.sandbox.presets[1], 'a draft being typed');
     sendMessage: () => saved,
   };
   const switchStart = source.indexOf('async function switchPreset(');
-  vm.runInNewContext(source.slice(switchStart, source.indexOf('async function saveThreshold(', switchStart)), sandbox);
+  vm.runInNewContext(source.slice(switchStart, source.indexOf('async function savePopupSettings(', switchStart)), sandbox);
   const switching = sandbox.switchPreset(0);
   assert.equal(sandbox.continuePrompt.disabled, true, 'block edits until the new slot is ready');
   finishSwitch({ ok: true, settings: { continuePresets: ['newest one', 'a draft being typed', 'three', 'four'] } });
   await switching;
   assert.equal(sandbox.continuePrompt.value, 'newest one', 'load the saved slot instead of a stale local copy');
   assert.equal(sandbox.continuePrompt.disabled, false);
+
+  const requests = [];
+  sandbox.chrome.runtime.sendMessage = async request => {
+    requests.push(request);
+    return { settings };
+  };
+  sandbox.clearTimeout = clearTimeout;
+  sandbox.pluginName = { value: 'DevSpace' };
+  sandbox.threshold.value = 45;
+  sandbox.editedFields = new Set([sandbox.threshold]);
+  sandbox.controlSaveQueue = Promise.resolve();
+  sandbox.refreshStatus = async () => {};
+  const saveStart = source.indexOf('async function savePopupSettings(');
+  const controlStart = source.indexOf('async function saveControlSettings(');
+  vm.runInNewContext(source.slice(saveStart, source.indexOf('async function loadSettings(', saveStart)), sandbox);
+  vm.runInNewContext(source.slice(controlStart, source.indexOf('preferredModel.addEventListener', controlStart)), sandbox);
+  await sandbox.savePopupSettings();
+  assert.deepEqual(JSON.parse(JSON.stringify(requests)), [
+    { type: 'saveSettings', tabId: 2, settings: { thresholdMinutes: 45 } },
+  ], 'a timer edit sends only the changed limit and targets the popup tab');
   console.log('popup_sync_ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

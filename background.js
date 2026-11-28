@@ -1,14 +1,16 @@
 if (typeof importScripts === "function") importScripts("log-files.js");
 
+const DEFAULT_HANDOFF_MINUTES = 150;
+
 const DEFAULT_SETTINGS = {
   preferredModel: "GPT-6.2",
+  preferredGeminiModel: "Neon",
   preferredReasoning: "high",
   enforceModelPreferences: true,
   reviewWorkflow: false,
   housekeeping: false,
   globalAgentInstructions: "",
   targetTabIds: [],
-  thresholdMinutes: 130,
   thinkingMinutes: 10,
   pluginName: "DevSpace",
   handoffPrompt:
@@ -29,6 +31,8 @@ const GOAL_CONTRACT = `Goal contract\n${CONTINUE_TERMINAL_NOTE} Otherwise use ne
 
 const AUTOMATION_NOTE =
   "This is an automated continuation. Use your judgment. Pick up the original goal from its current state and apply the guidance below where it helps.";
+
+const GEMINI_GUIDANCE = "The user's Gemini quota is counted per turn, so make the most of each turn with long, meaningful progress toward the goal. Use your judgment; avoid repeated polling and early wrap-ups.\n\nTo request a wait, end your reply with MONITOR_SLEEP_MINUTES=N on its own final line. Replace N with a whole number from 5 to 1440. The monitor waits that many minutes after your reply ends, then sends the next prompt.";
 
 const HOUSEKEEPING_GUIDANCE =
   "Make the active work easy to find, understand, and maintain. Use your judgment to consolidate scattered work and remove redundant code, tests, docs, or artifacts where it helps. Preserve useful checks, unique evidence, and unrelated work. Finish when the next person or agent can pick up the work easily and further cleanup would add little value.";
@@ -60,8 +64,13 @@ function customContinueText(text) {
 }
 const RECOVERY_CHECK_PROMPT = "Just reply to me: how is everything? Give me a brief, honest, realistic update on the current state and progress.";
 
+function promptWithoutGeminiGuidance(prompt) {
+  const text = String(prompt || "");
+  return text.endsWith(GEMINI_GUIDANCE) ? text.slice(0, -GEMINI_GUIDANCE.length).trimEnd() : text;
+}
+
 function promptWithoutInstructions(prompt) {
-  return String(prompt || "").split(GLOBAL_INSTRUCTIONS_HEADER)[0].split(GIT_INSTRUCTIONS_HEADER)[0];
+  return promptWithoutGeminiGuidance(prompt).split(GLOBAL_INSTRUCTIONS_HEADER)[0].split(GIT_INSTRUCTIONS_HEADER)[0];
 }
 
 function globalInstructionSuffix() {
@@ -108,7 +117,7 @@ function sameSubmittedPrompt(actual, expected) {
   if (!sent) return false;
   if (shown === sent) return true;
   const custom = String(settings?.pluginName || "").trim().toLowerCase().replace(/[^a-z0-9\s]+/g, "").replace(/\s+/g, "\\s*");
-  const pattern = new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})\\s+`, "i");
+  const pattern = new RegExp(`^@?(?:${[custom, "dev\\s*space", "spacedev"].filter(Boolean).join("|")})(?:\\s+Laptop)?\\s+`, "i");
   return shown.replace(pattern, "") === sent;
 }
 
@@ -141,6 +150,7 @@ const DIAGNOSTIC_EVENTS = new Set([
   "model-selection-applied", "model-selection-settled", "model-selection-failed",
   "monitoring-changed",
   "pause-changed",
+  "quota-limit",
   "watchdog-detected",
   "watchdog-reset",
   "watchdog-timeout",
@@ -168,9 +178,11 @@ const CONTENT_DIAGNOSTIC_REASONS = new Set([
 ]);
 let diagnosticWrites = Promise.resolve();
 let settingsWrites = Promise.resolve();
+let timerWrites = Promise.resolve();
 let runtimeWrites = Promise.resolve();
 let logFileError = "";
 let settings = { ...DEFAULT_SETTINGS };
+let tabTimers = {};
 const ready = initialize();
 
 function promptKind(action, prompt) {
@@ -207,7 +219,7 @@ function recordDiagnostic(event, details = {}) {
     phase: new Set([
       "watching", "working", "paused", "sending-continue", "waiting-for-response",
       "sending-handoff", "sending-terminal-review", "waiting-for-terminal-review",
-      "waiting-for-handoff", "opening-new-chat", "threshold-waiting", "finished",
+      "waiting-for-handoff", "opening-new-chat", "threshold-waiting", "finished", "sleeping",
     ]),
     promptMode: DIAGNOSTIC_PROMPT_MODES,
     reviewCheck: new Set(["no-new-response", "user-message-missing", "prompt-mismatch", "reply-empty"]),
@@ -216,7 +228,7 @@ function recordDiagnostic(event, details = {}) {
     reason: new Set([
       ...CONTENT_DIAGNOSTIC_REASONS,
       "started", "stopped", "paused", "resumed", "finished", "blocked",
-      "unreadable-check-in", "conversation-limit",
+      "unreadable-check-in", "conversation-limit", "usage-limit", "task-mode-required",
       "connection-interrupted", "stream-error", "missing-final-answer", "message-delivery-timeout",
       "review-reply-unconfirmed",
       "picker-unavailable", "model-unavailable", "reasoning-unavailable", "model-unconfirmed",
@@ -251,6 +263,13 @@ function recordDiagnostic(event, details = {}) {
   if (Number.isFinite(details.workedSeconds)) entry.workedSeconds = Math.max(0, Math.round(details.workedSeconds));
   if (Number.isInteger(details.attempt)) entry.attempt = details.attempt;
   if (details.instructionsAttached === true) entry.instructionsAttached = true;
+  if (event === "quota-limit") {
+    entry.provider = "gemini";
+    entry.quotaNotice = String(details.evidence?.text || '').slice(0, 700)
+      .replace(/https?:\/\/\S+/gi, '[URL]').replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, '[email]');
+    entry.quotaStructure = String(details.evidence?.structure || '').replace(/[^a-z0-9_ .:#=>-]/gi, '').slice(0, 240);
+    entry.composerDisabled = details.evidence?.composerDisabled === true;
+  }
   if (event.startsWith("model-selection-")) {
     for (const field of ["model", "observedModel"]) {
       if (["GPT-6", "GPT-5.6 Sol", "GPT-5.5"].includes(details[field])) entry[field] = details[field];
@@ -265,6 +284,12 @@ function recordDiagnostic(event, details = {}) {
     const events = Array.isArray(diagnostics) ? diagnostics : [];
     events.push(entry);
     await chrome.storage.local.set({ diagnostics: events.slice(-MAX_DIAGNOSTIC_EVENTS) });
+    if (event === "quota-limit") {
+      const { quotaObservations = [] } = await chrome.storage.local.get("quotaObservations");
+      const previous = Array.isArray(quotaObservations) ? quotaObservations : [];
+      const unique = previous.filter(item => item.quotaNotice !== entry.quotaNotice || item.quotaStructure !== entry.quotaStructure);
+      await chrome.storage.local.set({ quotaObservations: [...unique, entry].slice(-10) });
+    }
     if (typeof AgentMonitorLogFiles !== "undefined") {
       try {
         const written = await AgentMonitorLogFiles.append(entry);
@@ -282,12 +307,15 @@ function recordDiagnostic(event, details = {}) {
 }
 
 async function initialize() {
-  const [savedSettings, savedRuntime] = await Promise.all([
+  const [savedSettings, savedRuntime, savedTimers] = await Promise.all([
     chrome.storage.local.get("settings"),
     chrome.storage.local.get("runtime"),
+    chrome.storage.session.get("tabTimers"),
   ]);
 
   settings = { ...DEFAULT_SETTINGS, ...(savedSettings.settings || {}) };
+  delete settings.thresholdMinutes;
+  tabTimers = savedTimers.tabTimers || {};
   if (typeof settings.pluginName !== "string" || !settings.pluginName.trim()) {
     settings.pluginName = DEFAULT_SETTINGS.pluginName;
   }
@@ -358,6 +386,11 @@ async function persistSettings() {
   return settingsWrites;
 }
 
+async function persistTimers() {
+  timerWrites = timerWrites.catch(() => {}).then(() => chrome.storage.session.set({ tabTimers }));
+  return timerWrites;
+}
+
 async function persistRuntime() {
   runtimeWrites = runtimeWrites.catch(() => {}).then(() => chrome.storage.local.set({
     runtime: {
@@ -380,15 +413,21 @@ function syncKeepAwake() {
 function isChatUrl(url) {
   try {
     const hostname = new URL(url).hostname;
-    return hostname === "chatgpt.com" || hostname === "chat.openai.com";
+    return hostname === "chatgpt.com" || hostname === "chat.openai.com" || hostname === "gemini.google.com";
   } catch {
     return false;
   }
 }
 
+function isGeminiUrl(url) {
+  try { return new URL(url).hostname === "gemini.google.com"; }
+  catch { return false; }
+}
+
 function isConversationUrl(url) {
   try {
     const parsed = new URL(url);
+    if (isGeminiUrl(url)) return /^(?:\/u\/\d+)?\/app\/[^/]+\/?$/.test(parsed.pathname);
     return isChatUrl(url) &&
       (parsed.pathname.startsWith("/c/") || parsed.searchParams.get("temporary-chat") === "true");
   } catch {
@@ -468,9 +507,9 @@ function handoffProgress(state) {
 }
 
 function thresholdReached(state) {
+  if (isGeminiUrl(state?.url)) return false;
   if (state.manualContractOnly) return false;
-  const thresholdSeconds = Math.max(1, Number(settings.thresholdMinutes) || 130) * 60;
-  return handoffProgress(state) >= thresholdSeconds;
+  return handoffProgress(state) >= timersForTab(state.tabId).thresholdMinutes * 60;
 }
 
 function getState(tabId, url) {
@@ -506,6 +545,13 @@ function terminalStatus(text, task = "goal") {
   return match ? match[1].toLowerCase() : null;
 }
 
+function requestedSleepMinutes(text) {
+  const lastLine = String(text || "").trim().split(/\r?\n/).at(-1)?.trim();
+  const match = lastLine?.match(/^MONITOR_SLEEP_MINUTES=([1-9]\d{0,3})$/);
+  const minutes = match ? Number(match[1]) : 0;
+  return minutes >= 5 && minutes <= 1440 ? minutes : null;
+}
+
 function relayPrompt(handoff, state, instructions) {
   const relay = `${HANDOFF_RELAY}\n\n${handoff}`;
   const activeStep = cycleTaskPrompt(state?.cycleTask);
@@ -524,6 +570,7 @@ function nextAction(state, phase, name, prompt) {
   const mode = promptKind(name, prompt);
   const retry = state.nextActionSource === "action-retry" && prompt === state.actionPrompt;
   if (!retry) {
+    if (prompt && isGeminiUrl(state.url)) prompt = promptWithoutGeminiGuidance(prompt);
     state.pendingInstructionRefreshAt = null;
     if (prompt && settings.globalAgentInstructions) {
       const worked = workedTotal(state);
@@ -533,6 +580,7 @@ function nextAction(state, phase, name, prompt) {
       }
     }
     if (mode === "housekeeping") prompt += housekeepingGitSuffix(state.pendingInstructionRefreshAt != null);
+    if (prompt && isGeminiUrl(state.url)) prompt += `\n\n${GEMINI_GUIDANCE}`;
   }
   if (state.phase !== phase) state.sendFailures = 0;
   state.retryAt = null;
@@ -594,7 +642,19 @@ function continuePromptForTab(tabId) {
 }
 
 function controlsForTab(tabId) {
-  return settings.tabControls?.[tabId] || settings;
+  const saved = settings.tabControls?.[tabId];
+  return { ...settings, ...saved,
+    // Improve is opt-in for each tab. Old global defaults must not enable it.
+    reviewWorkflow: Number.isInteger(tabId) ? saved?.reviewWorkflow === true : settings.reviewWorkflow === true,
+  };
+}
+
+function timersForTab(tabId) {
+  return {
+    thresholdMinutes: DEFAULT_HANDOFF_MINUTES,
+    thinkingMinutes: settings.thinkingMinutes,
+    ...tabTimers[tabId],
+  };
 }
 
 function cycleTasks(tabId, active) {
@@ -746,7 +806,7 @@ async function injectTargetTab(tabId, direct = false) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"],
+      files: ["gemini.js", "content.js"],
     });
     return true;
   } catch {
@@ -819,7 +879,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "getSettings") {
       const profile = continueProfile(message.tabId);
-      sendResponse({ settings: { ...settings, ...settings.tabControls?.[message.tabId], continuePresets: profile.presets,
+      sendResponse({ settings: { ...controlsForTab(message.tabId),
+        ...timersForTab(message.tabId), continuePresets: profile.presets,
         continuePresetIndex: profile.index, continuePrompt: profile.presets[profile.index] } });
       return;
     }
@@ -827,7 +888,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "getDiagnostics") {
       await diagnosticWrites;
       const { diagnostics } = await chrome.storage.local.get("diagnostics");
-      sendResponse({ events: Array.isArray(diagnostics) ? diagnostics : [] });
+      const { quotaObservations } = await chrome.storage.local.get("quotaObservations");
+      const events = Array.isArray(diagnostics) ? diagnostics : [];
+      const seen = new Set(events.map(entry => JSON.stringify(entry)));
+      sendResponse({ events: [...events, ...(Array.isArray(quotaObservations) ? quotaObservations : [])
+        .filter(entry => !seen.has(JSON.stringify(entry)))] });
       return;
     }
 
@@ -867,20 +932,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ? message.settings.enforceModelPreferences : previous.enforceModelPreferences,
         preferredModel: typeof message.settings?.preferredModel === "string"
           ? message.settings.preferredModel.trim().slice(0, 80) : previous.preferredModel,
+        preferredGeminiModel: ["", "Hydrogen", "Neon"].includes(message.settings?.preferredGeminiModel)
+          ? message.settings.preferredGeminiModel : previous.preferredGeminiModel ?? DEFAULT_SETTINGS.preferredGeminiModel,
         preferredReasoning: ["", "instant", "medium", "high"].includes(message.settings?.preferredReasoning)
           ? message.settings.preferredReasoning : previous.preferredReasoning,
       };
       settings = {
         ...settings,
         ...(tabId === undefined ? controls : {}),
-        thresholdMinutes: Math.min(720, Math.max(1, Number(message.settings?.thresholdMinutes) || settings.thresholdMinutes || 130)),
-        thinkingMinutes: Math.min(60, Math.max(1, Number(message.settings?.thinkingMinutes) || settings.thinkingMinutes || 10)),
+        thinkingMinutes: tabId === undefined
+          ? Math.min(60, Math.max(1, Number(message.settings?.thinkingMinutes) || settings.thinkingMinutes || 10))
+          : settings.thinkingMinutes,
         pluginName: typeof message.settings?.pluginName === "string"
           ? (message.settings.pluginName.trim().slice(0, 80) || DEFAULT_SETTINGS.pluginName)
           : (settings.pluginName || DEFAULT_SETTINGS.pluginName),
       };
-      if (tabId !== undefined) settings.tabControls[tabId] = controls;
-      await persistSettings();
+      if (tabId !== undefined && Object.keys(controls).some((key) => Object.hasOwn(message.settings || {}, key))) {
+        settings.tabControls[tabId] = controls;
+      }
+      const threshold = Number(message.settings?.thresholdMinutes);
+      const thinking = Number(message.settings?.thinkingMinutes);
+      const timers = {};
+      if (Number.isFinite(threshold) && threshold > 0) timers.thresholdMinutes = Math.min(720, Math.max(1, threshold));
+      if (Number.isFinite(thinking) && thinking > 0) timers.thinkingMinutes = Math.min(60, Math.max(1, thinking));
+      if (tabId !== undefined && Object.keys(timers).length) {
+        tabTimers[tabId] = { ...tabTimers[tabId], ...timers };
+        await Promise.all([persistSettings(), persistTimers()]);
+      } else {
+        await persistSettings();
+      }
       syncKeepAwake();
       sendResponse({ settings });
       return;
@@ -922,7 +1002,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = Number(message.tabId);
       if (message.enabled) {
         if (!Number.isInteger(tabId) || !isChatUrl(message.url)) {
-          sendResponse({ ok: false, error: "Open a ChatGPT tab first." });
+          sendResponse({ ok: false, error: "Open a ChatGPT or Gemini tab first." });
           return;
         }
         const existing = states.get(tabId);
@@ -939,7 +1019,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const attached = await injectTargetTab(tabId);
         if (!attached) {
           const state = states.get(tabId);
-          state.issue = "Could not attach to this tab. Refresh ChatGPT and retry.";
+          state.issue = "Could not attach to this tab. Refresh it and retry.";
           await persistRuntime();
         }
       } else {
@@ -952,7 +1032,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "setHandoffProgress") {
       const { tabId, url, minutes } = message;
       if (!Number.isInteger(tabId) || !isConversationUrl(url) || !Number.isFinite(minutes)) {
-        sendResponse({ ok: false, error: "Open a ChatGPT conversation first." });
+        sendResponse({ ok: false, error: "Open a ChatGPT conversation or Gemini Task first." });
         return;
       }
       const existing = states.get(tabId);
@@ -961,7 +1041,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const state = getState(tabId, url);
-      const seconds = Math.min(settings.thresholdMinutes, Math.max(0, Math.round(minutes))) * 60;
+      const seconds = Math.min(timersForTab(tabId).thresholdMinutes, Math.max(0, Math.round(minutes))) * 60;
       // The slider sets a new baseline. Future history scans must not add
       // the old conversation's time back on top of it.
       state.handoffOffsetSeconds = seconds - trackedWork(state);
@@ -990,6 +1070,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "getMonitorStatus") {
       const tabId = Number(message.tabId);
+      const { thresholdMinutes, thinkingMinutes } = timersForTab(tabId);
       const isCurrentTab = targetMatches(tabId);
       const state = isCurrentTab ? states.get(tabId) : null;
       const saved = states.get(tabId);
@@ -1005,20 +1086,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       sendResponse({
         isCurrentTab,
+        provider: isGeminiUrl(message.url) ? "gemini" : "chatgpt",
         currentTabSupported: isChatUrl(message.url),
         status: isCurrentTab ? state?.taskStatus || "ongoing" : "off",
         phase: isCurrentTab ? state?.phase || "watching" : "off",
         cycleStage: isCurrentTab ? cycleStage(tabId, state?.cycleTask) : null,
         isGenerating: Boolean(isCurrentTab && state?.activeStartedAt),
         extendedThinkingStartedAt: isCurrentTab ? state?.extendedThinkingStartedAt || null : null,
-        extendedThinkingLimitMs: settings.thinkingMinutes * 60 * 1000,
+        extendedThinkingLimitMs: thinkingMinutes * 60 * 1000,
         workedSeconds: workedTotal(state),
         handoffSeconds: handoffProgress(progressState),
-        thresholdMinutes: settings.thresholdMinutes,
+        thresholdMinutes,
         issue: state?.issue || "",
         logFileError,
         connected: Boolean(lastSeen && Date.now() - lastSeen < 15000),
         paused: Boolean(state?.paused),
+        wakeAt: state?.wakeAt || null,
       });
       return;
     }
@@ -1035,6 +1118,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const paused = Boolean(message.paused);
+      const resumeFromQuota = !paused && state.pauseReason === "usage-limit";
       if (paused && state.activeStartedAt) {
         state.trackedSeconds = (Number(state.trackedSeconds) || 0)
           + Math.max(0, (Date.now() - state.activeStartedAt) / 1000);
@@ -1053,13 +1137,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.issue = "";
       }
       state.phase = paused ? "paused" : state.resumePhase || "watching";
+      if (resumeFromQuota) {
+        state.issue = "";
+        if (SENDING_PHASES.has(state.phase)) state.retryAt = Date.now();
+      }
+      state.pauseReason = paused ? message.reason || "paused" : null;
       if (paused && message.reason === "conversation-limit") {
         state.issue = "ChatGPT reached this conversation's length limit. Start a new chat to continue.";
         state.retryAt = null;
       }
+      if (paused && message.reason === "task-mode-required") {
+        state.issue = "Open a Gemini Task, then Resume. Regular Chat mode cannot run this task.";
+      }
+      if (paused && message.reason === "usage-limit" && isGeminiUrl(state.url)) {
+        state.issue = "Gemini reached a usage limit. Resume after the quota resets. Banner evidence was saved in Logs.";
+        state.retryAt = null;
+        void recordDiagnostic("quota-limit", { tabId, phase: "paused", evidence: message.evidence });
+      }
       await persistRuntime();
       void recordDiagnostic("pause-changed", {
-        tabId, reason: paused ? (message.reason === "conversation-limit" ? "conversation-limit" : "paused") : "resumed", phase: state.phase,
+        tabId, reason: paused ? (["conversation-limit", "usage-limit", "task-mode-required"].includes(message.reason) ? message.reason : "paused") : "resumed", phase: state.phase,
       });
       sendResponse({ ok: true, paused: state.paused });
       return;
@@ -1092,7 +1189,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "The conversation changed. Open the popup and try again." });
           return;
         }
-        const prompt = basePrompt + (message.kind === "housekeeping" ? housekeepingGitSuffix() : "");
+        const prompt = basePrompt + (message.kind === "housekeeping" ? housekeepingGitSuffix() : "")
+          + (isGeminiUrl(tab.url) ? `\n\n${GEMINI_GUIDANCE}` : "");
         const deliver = () => chrome.tabs.sendMessage(tabId, {
           type: "sendCyclePrompt", prompt, expectedUrl: message.url,
         }, { frameId: 0 });
@@ -1127,6 +1225,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             syncKeepAwake();
           }
           state.phase = "sending-continue";
+          state.wakeAt = null;
+          state.sleepResumePhase = null;
           state.cycleTask = message.kind;
           state.goalTurnPending = false;
           state.pendingInstructionRefreshAt = null;
@@ -1162,13 +1262,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           "conversation-changed": "The conversation changed before the prompt could be sent.",
         };
         sendResponse(result?.ok ? { ok: true } : {
-          ok: false, error: errors[result?.reason] || "Check ChatGPT to see whether the prompt was sent.",
+          ok: false, error: (errors[result?.reason] || "Check ChatGPT to see whether the prompt was sent.")
+            .replaceAll("ChatGPT", isGeminiUrl(message.url) ? "Gemini" : "ChatGPT"),
         });
       } catch {
         void recordDiagnostic("action-result", { ...diagnostic, success: false, reason: failure });
         sendResponse({ ok: false, error: failure === "command-unconfirmed"
-          ? "Check ChatGPT to see whether the prompt was sent."
-          : "Could not connect to this ChatGPT tab. Refresh it and try again." });
+          ? "Check the task to see whether the prompt was sent."
+          : "Could not connect to this tab. Refresh it and try again." });
       } finally {
         cyclePromptsInFlight.delete(tabId);
       }
@@ -1182,6 +1283,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const state = getState(tabId, states.get(tabId)?.url || "");
+      if (state.wakeAt && Date.now() < state.wakeAt) {
+        sendResponse({ ok: false, error: "This task is waiting for its requested wake time." });
+        return;
+      }
       if (state.paused) {
         sendResponse({ ok: false, error: "Resume monitoring before retrying." });
         return;
@@ -1209,6 +1314,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "manualSwap") {
       const tabId = Number(message.tabId);
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (isGeminiUrl(tab?.url)) {
+        sendResponse({ ok: false, error: "Gemini Tasks continue in the same conversation." });
+        return;
+      }
       if (manualSwapsInFlight.has(tabId) || cyclePromptsInFlight.has(tabId)) {
         sendResponse({ ok: false, error: "Handoff is already starting." });
         return;
@@ -1327,13 +1437,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const state = target ? states.get(tabId) : null;
       const controls = controlsForTab(tabId);
+      const gemini = isGeminiUrl(sender.tab?.url || state?.url);
       const cyclePromptPending = cyclePromptsInFlight.has(tabId);
       sendResponse({ target: message.cyclePrompt ? cyclePromptPending : target,
         paused: !message.cyclePrompt && Boolean(state?.paused || cyclePromptPending), cyclePromptPending,
         pendingDelivery: pendingHandoffs.has(tabId), scanHistory: state?.historyScanned !== true,
-        thinkingMinutes: settings.thinkingMinutes,
+        thinkingMinutes: timersForTab(tabId).thinkingMinutes,
         enforceModelPreferences: controls.enforceModelPreferences !== false,
-        preferredModel: controls.preferredModel, preferredReasoning: controls.preferredReasoning,
+        preferredModel: gemini ? controls.preferredGeminiModel ?? DEFAULT_SETTINGS.preferredGeminiModel : controls.preferredModel,
+        preferredReasoning: gemini ? "" : controls.preferredReasoning,
         pluginName: settings.pluginName || DEFAULT_SETTINGS.pluginName });
       return;
     }
@@ -1455,7 +1567,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         void recordDiagnostic("watchdog-stop-failed", {
           tabId,
           reason: "stop-control-remained-visible",
-          elapsedMs: settings.thinkingMinutes * 60 * 1000,
+          elapsedMs: timersForTab(tabId).thinkingMinutes * 60 * 1000,
         });
         if (!state.paused) {
           state.issue = Number(message.attempt) >= 3
@@ -1517,7 +1629,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "model-preference": "Could not apply the model settings before sending.",
             "model-unconfirmed": "The new chat has not settled on the configured model and reasoning.",
             "picker-unavailable": "Could not open the model picker.",
-            "model-unavailable": "The configured model is unavailable in ChatGPT.",
+            "model-unavailable": "The configured model is unavailable on this page.",
+            "task-mode-required": "Open a Gemini Task. Regular Chat mode cannot run this task.",
             "reasoning-unavailable": "Could not set the configured reasoning level.",
             "composer-unavailable": "ChatGPT's composer is not available. Refresh the tab, then Retry.",
             "conversation-changed": "The monitored conversation changed before the prompt could be sent.",
@@ -1565,6 +1678,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           state.issue = (message.action === "deliverHandoff" && handoffFailureMessages[message.reason])
             || promptFailureMessages[message.reason]
             || issueByAction[message.action] || "Could not submit the prompt.";
+          if (isGeminiUrl(state.url)) state.issue = state.issue.replaceAll("ChatGPT", "Gemini").replaceAll("plugin", "connector");
           if (state.retryAt || pendingHandoff?.retryAt) state.issue += " Retrying shortly.";
           if (state.paused) {
             state.resumePhase = state.phase;
@@ -1620,6 +1734,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.isGenerating) {
+      // A user-started turn supersedes an outstanding wait.
+      if (state.wakeAt) {
+        state.wakeAt = null;
+        state.phase = state.sleepResumePhase || "watching";
+        state.sleepResumePhase = null;
+      }
       let changed = false;
       if (state.terminalReviewIdleSince) {
         state.terminalReviewIdleSince = null;
@@ -1664,6 +1784,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         + Math.max(0, (Date.now() - state.activeStartedAt) / 1000);
       state.activeStartedAt = null;
       await persistRuntime();
+    }
+
+    if (state.wakeAt) {
+      const newReply = message.responseKey && message.responseKey !== state.sleepResponseKey;
+      if (!newReply && Date.now() < state.wakeAt) { sendResponse({}); return; }
+      if (message.composerEmpty === false) { sendResponse({}); return; }
+      state.wakeAt = null;
+      state.phase = state.sleepResumePhase || "watching";
+      state.sleepResumePhase = null;
+      await persistRuntime();
+    }
+    const sleepMinutes = isGeminiUrl(url) && message.latestResponseIsSubstantive !== false
+      ? requestedSleepMinutes(message.latestResponseText) : null;
+    if (sleepMinutes && message.responseKey && message.responseKey !== state.lastResponseKey
+        && message.responseKey !== state.sleepResponseKey && message.composerEmpty !== false
+        && !SENDING_PHASES.has(state.phase)
+        && (state.phase !== "waiting-for-terminal-review"
+          || sameSubmittedPrompt(message.latestUserText, state.terminalReviewPrompt))) {
+      state.sleepResumePhase = state.phase;
+      state.sleepResponseKey = message.responseKey;
+      state.wakeAt = Date.now() + sleepMinutes * 60000;
+      state.phase = "sleeping";
+      state.issue = "";
+      await persistRuntime();
+      sendResponse({});
+      return;
     }
 
     const deliveryTimedOut = message.recoveryReason === "message-delivery-timeout";
@@ -1978,6 +2124,10 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   removeMonitoringTab(tabId);
   delete settings.tabContinuePresets?.[tabId];
   delete settings.tabControls?.[tabId];
+  if (Object.hasOwn(tabTimers, tabId)) {
+    delete tabTimers[tabId];
+    await persistTimers();
+  }
   await persistSettings();
   await persistRuntime();
   syncKeepAwake();
@@ -1992,6 +2142,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
   await validateTargetTabs();
   for (const tabId of settings.targetTabIds) {
+    const sleeping = states.get(tabId);
+    if (sleeping?.wakeAt && !sleeping.paused && Date.now() >= sleeping.wakeAt) {
+      try { await chrome.tabs.sendMessage(tabId, { type: "wakeMonitor" }, { frameId: 0 }); }
+      catch { await injectTargetTab(tabId); }
+      continue;
+    }
     const lastSeen = lastSeenAt.get(tabId) || 0;
     if (Date.now() - lastSeen < 30000) continue;
     const state = states.get(tabId);

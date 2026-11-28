@@ -12,6 +12,7 @@ const local = {};
 const session = {};
 local.settings = {
   enabled: false,
+  thresholdMinutes: 30,
   preferredModel: "GPT-5.6 Sol",
   preferredReasoning: "high",
   tabControls: {
@@ -86,7 +87,7 @@ function send(message, sender = {}) {
   assert.equal((await send({ type: "getSettings" })).settings.continuePrompt, "continue");
   await send({ type: "saveContinuePreset", index: 0, text: "A custom saved continue prompt." });
   assert.equal((await send({ type: "getSettings" })).settings.continuePresets[0], "A custom saved continue prompt.");
-  await send({ type: "saveSettings", settings: { thresholdMinutes: 130, thinkingMinutes: 2 } });
+  await send({ type: "saveSettings", settings: { thinkingMinutes: 2 } });
 
   const tab = { tab: { id: 7, url: "https://chatgpt.com/c/original" } };
   await send({ type: "setMonitoring", enabled: true, tabId: 7, url: tab.tab.url });
@@ -107,16 +108,16 @@ function send(message, sender = {}) {
   const modelSettings = (await send({ type: 'getSettings' })).settings;
   assert.equal(modelSettings.preferredModel, 'GPT-6');
   assert.equal(modelSettings.thinkingMinutes, 2, 'editing the model must preserve timers');
-  assert.equal(modelSettings.thresholdMinutes, 130);
+  assert.equal(modelSettings.thresholdMinutes, 150);
   await send({ type: 'saveSettings', settings: { preferredModel: '', preferredReasoning: '' } });
   assert.equal((await send({ type: 'isTargetTab' }, tab)).preferredModel, '', 'keep current is explicit');
   await send({ type: 'saveSettings', settings: { preferredModel: 'GPT-5.6 Sol', preferredReasoning: 'high' } });
   assert.equal((await send({ type: "getMonitorStatus", tabId: 7, url: tab.tab.url })).extendedThinkingLimitMs, 120000);
-  await send({ type: "saveSettings", settings: { thresholdMinutes: 130, thinkingMinutes: 10 } });
+  await send({ type: "saveSettings", settings: { thinkingMinutes: 10 } });
   assert.ok(powerCalls.some(([action, level]) => action === "request" && level === "system"));
 
-  await send({ type: "historyScanComplete", url: tab.tab.url, workedSeconds: 7800 }, tab);
-  await send({ type: "status", url: tab.tab.url, isGenerating: true, workedSeconds: 7800 }, tab);
+  await send({ type: "historyScanComplete", url: tab.tab.url, workedSeconds: 9000 }, tab);
+  await send({ type: "status", url: tab.tab.url, isGenerating: true, workedSeconds: 9000 }, tab);
   const thresholdStatus = await send({ type: "getMonitorStatus", tabId: 7, url: tab.tab.url });
   assert.equal(thresholdStatus.phase, "threshold-waiting");
 
@@ -124,7 +125,7 @@ function send(message, sender = {}) {
     type: "status",
     url: tab.tab.url,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "response-1",
     latestResponseText: "Substantive work remains.",
   }, tab);
@@ -133,12 +134,12 @@ function send(message, sender = {}) {
 
   await send({ type: "commandResult", action: "sendHandoff", ok: true, url: tab.tab.url }, tab);
   const decoratedUrl = `${tab.tab.url}?messageId=finalAgentTurnStart`;
-  await send({ type: "status", url: decoratedUrl, isGenerating: true, workedSeconds: 7800 }, tab);
+  await send({ type: "status", url: decoratedUrl, isGenerating: true, workedSeconds: 9000 }, tab);
   action = await send({
     type: "status",
     url: decoratedUrl,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "handoff-response",
     latestResponseText: validHandoffA,
     latestResponseIsSubstantive: true,
@@ -281,12 +282,12 @@ function send(message, sender = {}) {
   // re-opening and clicking the plugin picker on every content scan.
   await send({ type: "setMonitoring", enabled: true, tabId: 20, url: "https://chatgpt.com/c/handoff-retry" });
   const retryHandoffTab = { tab: { id: 20, url: "https://chatgpt.com/c/handoff-retry" } };
-  await send({ type: "historyScanComplete", url: retryHandoffTab.tab.url, workedSeconds: 7800 }, retryHandoffTab);
+  await send({ type: "historyScanComplete", url: retryHandoffTab.tab.url, workedSeconds: 9000 }, retryHandoffTab);
   const retryHandoffAction = await send({
     type: "status",
     url: retryHandoffTab.tab.url,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "retry-handoff-trigger",
     latestResponseText: "The handoff threshold has been reached.",
   }, retryHandoffTab);
@@ -296,7 +297,7 @@ function send(message, sender = {}) {
     type: "status",
     url: retryHandoffTab.tab.url,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "retry-handoff-response",
     latestResponseText: validHandoffA,
     latestResponseIsSubstantive: true,
@@ -347,12 +348,12 @@ function send(message, sender = {}) {
   // A terminal block gets one reconsideration even at the handoff threshold.
   await send({ type: "setMonitoring", enabled: true, tabId: 19, url: "https://chatgpt.com/c/blocked-at-threshold" });
   const blockedAtThresholdTab = { tab: { id: 19, url: "https://chatgpt.com/c/blocked-at-threshold" } };
-  await send({ type: "historyScanComplete", url: blockedAtThresholdTab.tab.url, workedSeconds: 7800 }, blockedAtThresholdTab);
+  await send({ type: "historyScanComplete", url: blockedAtThresholdTab.tab.url, workedSeconds: 9000 }, blockedAtThresholdTab);
   const blockedAtThresholdAction = await send({
     type: "status",
     url: blockedAtThresholdTab.tab.url,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "blocked-at-threshold-response",
     latestResponseText: "User action appears necessary.\n\nTASK_BLOCKED",
     consecutiveBlockedResponses: 1,
@@ -473,7 +474,7 @@ function send(message, sender = {}) {
   await send({ type: "setMonitoring", enabled: true, tabId: 28, url: "https://chatgpt.com/c/threshold-recovery" });
   const thresholdRecoveryTab = { tab: { id: 28, url: "https://chatgpt.com/c/threshold-recovery" } };
   await send({ type: "historyScanComplete", url: thresholdRecoveryTab.tab.url, workedSeconds: 0 }, thresholdRecoveryTab);
-  local.runtime.states[28].trackedSeconds = 7800;
+  local.runtime.states[28].trackedSeconds = 9000;
   const thresholdRecovery = await send({
     type: "status", url: thresholdRecoveryTab.tab.url, isGenerating: false,
     recoveryKey: "interrupted-at-threshold", responseKey: "", latestResponseText: "",
@@ -484,7 +485,7 @@ function send(message, sender = {}) {
   const thresholdSendTimeoutTab = { tab: { id: 29, url: "https://chatgpt.com/c/threshold-send-timeout" } };
   await send({ type: "historyScanComplete", url: thresholdSendTimeoutTab.tab.url, workedSeconds: 0 }, thresholdSendTimeoutTab);
   Object.assign(local.runtime.states[29], {
-    trackedSeconds: 7800,
+    trackedSeconds: 9000,
     phase: "sending-continue",
     actionStartedAt: Date.now() - 31000,
   });
@@ -590,23 +591,23 @@ function send(message, sender = {}) {
 
   await send({ type: "setMonitoring", enabled: true, tabId: 13, url: "https://chatgpt.com/c/empty-handoff" });
   const emptyHandoffTab = { tab: { id: 13, url: "https://chatgpt.com/c/empty-handoff" } };
-  await send({ type: "historyScanComplete", url: emptyHandoffTab.tab.url, workedSeconds: 7800 }, emptyHandoffTab);
+  await send({ type: "historyScanComplete", url: emptyHandoffTab.tab.url, workedSeconds: 9000 }, emptyHandoffTab);
   await send({
     type: "status",
     url: emptyHandoffTab.tab.url,
     isGenerating: false,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "before-handoff",
     latestResponseText: "Work remains.",
   }, emptyHandoffTab);
   await send({ type: "commandResult", action: "sendHandoff", ok: true, url: emptyHandoffTab.tab.url }, emptyHandoffTab);
-  await send({ type: "status", url: emptyHandoffTab.tab.url, isGenerating: true, workedSeconds: 7800 }, emptyHandoffTab);
+  await send({ type: "status", url: emptyHandoffTab.tab.url, isGenerating: true, workedSeconds: 9000 }, emptyHandoffTab);
   const noTextRotation = await send({
     type: "status",
     url: emptyHandoffTab.tab.url,
     isGenerating: false,
     generationEnded: true,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
     responseKey: "turn:conversation-turn-4",
     latestResponseText: "",
     latestResponseIsSubstantive: false,
@@ -774,7 +775,7 @@ function send(message, sender = {}) {
   await send({
     type: "historyScanComplete",
     url: longThinkingThresholdTab.tab.url,
-    workedSeconds: 7800,
+    workedSeconds: 9000,
   }, longThinkingThresholdTab);
   const longThinkingThresholdRecovery = await send({
     type: "extendedThinkingRecoveryReady",
@@ -796,9 +797,9 @@ function send(message, sender = {}) {
   await send({ type: "commandResult", action: "sendContinue", ok: true,
     url: longThinkingThresholdTab.tab.url }, longThinkingThresholdTab);
   await send({ type: "status", url: longThinkingThresholdTab.tab.url,
-    isGenerating: true, workedSeconds: 7800 }, longThinkingThresholdTab);
+    isGenerating: true, workedSeconds: 9000 }, longThinkingThresholdTab);
   const afterShortRecovery = await send({ type: "status", url: longThinkingThresholdTab.tab.url,
-    isGenerating: false, workedSeconds: 7800, responseKey: "after-short-recovery",
+    isGenerating: false, workedSeconds: 9000, responseKey: "after-short-recovery",
     latestResponseText: "The task can continue.", latestResponseIsSubstantive: true,
     latestUserText: longThinkingThresholdRecovery.prompt, composerEmpty: true }, longThinkingThresholdTab);
   assert.equal(afterShortRecovery.action, "sendHandoff",
@@ -834,7 +835,7 @@ function send(message, sender = {}) {
   await send({ type: "historyScanComplete", url: adjustedUrl, workedSeconds: 8000 }, adjustedTab);
   assert.equal((await readTimer()).handoffSeconds, 7200, "history does not add to an explicit adjustment");
   assert.equal((await readTimer()).workedSeconds, 8000, "actual work stays available independently");
-  const due = await adjust(130);
+  const due = await adjust(150);
   assert.equal(due.ok, true);
   const next = await send({ type: "status", url: adjustedUrl, responseKey: "adjusted-timer",
     latestResponseText: "The work can continue.", composerEmpty: true }, adjustedTab);

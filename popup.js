@@ -46,7 +46,8 @@ let presets = [];
 let activePreset = 0;
 let logFolderName = "";
 let promptTimer;
-let thresholdTimer;
+let settingsTimer;
+const editedFields = new Set();
 let noticeTimer;
 let sendingCyclePrompt = false;
 let saveQueue = Promise.resolve();
@@ -62,20 +63,26 @@ let savedSettings = null;
 
 function updateModelControls() {
   preferredModel.disabled = !settingsLoaded || !enforceModelPreferences.checked;
-  preferredReasoning.disabled = !settingsLoaded || !enforceModelPreferences.checked;
+  preferredReasoning.disabled = !settingsLoaded || !enforceModelPreferences.checked || preferredModel.dataset?.provider === "gemini";
 }
 
 function syncSavedSettings(settings) {
   savedSettings = settings;
   if (!settingsLoaded) return;
   if (!pendingControlWrites) {
-    const controls = settings.tabControls?.[promptTabId] || settings;
-    if (document.activeElement !== preferredModel) preferredModel.value = controls.preferredModel || "";
+    const savedControls = settings.tabControls?.[promptTabId];
+    const controls = { ...settings, ...savedControls,
+      reviewWorkflow: savedControls?.reviewWorkflow === true };
+    if (document.activeElement !== preferredModel) preferredModel.value = preferredModel.dataset?.provider === "gemini"
+      ? controls.preferredGeminiModel ?? "Neon" : controls.preferredModel || "";
     preferredReasoning.value = controls.preferredReasoning || "";
     enforceModelPreferences.checked = controls.enforceModelPreferences !== false;
     reviewWorkflow.checked = controls.reviewWorkflow === true;
     housekeeping.checked = controls.housekeeping === true;
     updateModelControls();
+    if (typeof pluginName !== "undefined" && !settingsTimer && document.activeElement !== pluginName) {
+      pluginName.value = settings.pluginName || "DevSpace";
+    }
   }
   const profile = settings.tabContinuePresets?.[promptTabId];
   const nextPresets = settings.continuePresets;
@@ -86,13 +93,6 @@ function syncSavedSettings(settings) {
     activePreset = nextIndex;
     if (continuePrompt.value !== presets[activePreset]) continuePrompt.value = presets[activePreset];
     renderPresetButtons();
-  }
-  if (!thresholdTimer && document.activeElement !== threshold && document.activeElement !== thinkingMinutes) {
-    threshold.value = settings.thresholdMinutes;
-    thinkingMinutes.value = settings.thinkingMinutes || 10;
-  }
-  if (typeof pluginName !== "undefined" && !thresholdTimer && document.activeElement !== pluginName) {
-    pluginName.value = settings.pluginName || "DevSpace";
   }
 }
 
@@ -153,27 +153,34 @@ function renderStatus(result) {
   for (const button of sendNowButtons) {
     button.disabled = sendingCyclePrompt || result.lookupFailed || !isConversationUrl(activeTab?.url);
   }
-  progress.disabled = Boolean(result.lookupFailed) || !isConversationUrl(activeTab?.url);
+  progress.disabled = result.provider === "gemini" || Boolean(result.lookupFailed) || !isConversationUrl(activeTab?.url);
+  if (Number.isFinite(result.thresholdMinutes) && settingsLoaded && !settingsTimer && !pendingControlWrites) {
+    if (document.activeElement !== threshold) threshold.value = result.thresholdMinutes;
+    if (document.activeElement !== thinkingMinutes) thinkingMinutes.value = result.extendedThinkingLimitMs / 60000;
+  }
   if (!handoffEdit || handoffEdit.url !== activeTab?.url) {
-    const limit = Math.max(1, Math.round(Number(result.thresholdMinutes || threshold.value || 130)));
+    const limit = Math.max(1, Math.round(Number(result.thresholdMinutes || threshold.value || 150)));
     const minutes = Math.floor((Number(result.handoffSeconds ?? result.workedSeconds) || 0) / 60);
     renderHandoffProgress(minutes, limit);
   }
   const countdown = thinkingCountdown(result, monitoring, paused);
+  if (result.provider === "gemini") workedText.textContent = `${formatMinutes(result.workedSeconds)} worked`;
 
   let label = "Off";
   let detail = "";
   if (result.lookupFailed) { label = "Unavailable"; detail = "Reload the extension"; }
-  else if (!monitoring) detail = result.currentTabSupported ? "" : "Open a ChatGPT tab";
+  else if (!monitoring) detail = result.currentTabSupported ? "" : "Open a ChatGPT or Gemini tab";
   else if (paused) { label = "Paused"; detail = result.issue || ""; }
   else if (value === "finished") label = "Finished";
   else if (value === "blocked") { label = "Blocked"; detail = "Waiting for you"; }
   else if (result.issue) { label = "Attention"; detail = result.issue; }
   else if (result.isGenerating) { label = "Working"; detail = countdown; }
+  else if (result.wakeAt) { label = "Sleeping"; detail = `Continue in ${formatCountdown(result.wakeAt - Date.now())}`; }
   else if (!result.connected) label = "Reconnecting";
   else label = PHASE_LABELS[result.phase] || "Watching";
 
   taskStatus.textContent = label;
+  taskStatus.title = result.provider === "gemini" ? "Gemini Task" : "ChatGPT";
   taskStatus.className = `task-status ${paused ? "paused" : result.issue || result.lookupFailed ? "error" : value}`;
   statusDetail.textContent = detail;
   statusDetail.hidden = !detail;
@@ -185,7 +192,7 @@ function renderStatus(result) {
   pauseButton.textContent = paused ? "Resume" : "Pause";
   pauseButton.className = `pause-button${monitoring ? " visible" : ""}`;
   pauseButton.disabled = !monitoring;
-  swapButton.className = `swap-button${result.currentTabSupported ? " visible" : ""}`;
+  swapButton.className = `swap-button${result.currentTabSupported && result.provider !== "gemini" ? " visible" : ""}`;
   swapButton.disabled = !isConversationUrl(activeTab?.url)
     || (monitoring && (value !== "ongoing"
       || ["sending-handoff", "waiting-for-handoff", "opening-new-chat"].includes(result.phase)));
@@ -196,14 +203,37 @@ function renderStatus(result) {
 }
 
 function isChatUrl(url) {
-  try { return ["chatgpt.com", "chat.openai.com"].includes(new URL(url).hostname); }
+  try { return ["chatgpt.com", "chat.openai.com", "gemini.google.com"].includes(new URL(url).hostname); }
   catch { return false; }
 }
 
 function isConversationUrl(url) {
   if (!isChatUrl(url)) return false;
   const parsed = new URL(url);
+  if (parsed.hostname === "gemini.google.com") return /^(?:\/u\/\d+)?\/app\/[^/]+\/?$/.test(parsed.pathname);
   return parsed.pathname.startsWith("/c/") || parsed.searchParams.get("temporary-chat") === "true";
+}
+
+function configureProvider() {
+  if (!preferredModel.dataset) return;
+  const gemini = activeTab?.url && new URL(activeTab.url).hostname === "gemini.google.com";
+  const provider = gemini ? "gemini" : "chatgpt";
+  if (preferredModel.dataset.provider === provider) return;
+  preferredModel.dataset.provider = provider;
+  const models = gemini ? ['Hydrogen', 'Neon'] : ['GPT-6.2', 'GPT-6', 'GPT-5.6 Sol'];
+  preferredModel.innerHTML = '<option value="">Keep current</option>'
+    + models.map(model => `<option value="${model}">${model}</option>`).join('');
+  preferredReasoning.closest('label').hidden = gemini;
+  threshold.closest('label').hidden = gemini;
+  thinkingMinutes.closest('label').hidden = gemini;
+  progress.hidden = gemini;
+  preferredModel.closest('.model-row').classList.toggle('gemini', gemini);
+  preferredModel.closest('.settings-card').classList.toggle('gemini', gemini);
+  enforceModelPreferences.setAttribute('aria-label', gemini ? 'Apply model automatically' : 'Apply model and reasoning automatically');
+  enforceModelPreferences.closest('label').title = gemini ? 'Apply model automatically' : 'Apply model and reasoning automatically';
+  pluginName.closest('label').firstChild.textContent = gemini ? 'Connector ' : 'Plugin ';
+  if (savedSettings) syncSavedSettings(savedSettings);
+  updateModelControls();
 }
 
 async function findActiveTab() {
@@ -222,6 +252,7 @@ function refreshStatus() {
   statusRefresh = (async () => {
     try {
       activeTab = await findActiveTab();
+      configureProvider();
       const result = await chrome.runtime.sendMessage({
         type: "getMonitorStatus", tabId: activeTab?.id, url: activeTab?.url,
       });
@@ -293,19 +324,19 @@ async function switchPreset(index) {
   }
 }
 
-async function saveThreshold() {
-  clearTimeout(thresholdTimer);
-  thresholdTimer = null;
-  pluginNameTimer = null;
+async function savePopupSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = null;
   const minutes = Number(threshold.value);
   const thinking = Number(thinkingMinutes.value);
-  const settings = { pluginName: pluginName.value.trim() || "DevSpace" };
-  if (Number.isFinite(minutes) && minutes >= 1 && minutes <= 720) settings.thresholdMinutes = minutes;
-  if (Number.isFinite(thinking) && thinking >= 1 && thinking <= 60) settings.thinkingMinutes = thinking;
-  try {
-    await chrome.runtime.sendMessage({ type: "saveSettings", settings });
-    await refreshStatus();
-  } catch { showNotice("Could not save settings.", true); }
+  const settings = {};
+  if (editedFields.has(threshold) && minutes >= 1 && minutes <= 720) settings.thresholdMinutes = minutes;
+  if (editedFields.has(thinkingMinutes) && thinking >= 1 && thinking <= 60) settings.thinkingMinutes = thinking;
+  if (editedFields.has(pluginName)) settings.pluginName = pluginName.value;
+  editedFields.clear();
+  if (!Object.keys(settings).length) return;
+  await saveControlSettings(settings);
+  await refreshStatus();
 }
 
 async function loadSettings() {
@@ -322,7 +353,9 @@ async function loadSettings() {
       pluginName.value = settings.pluginName || "DevSpace";
       pluginName.disabled = false;
     }
-    preferredModel.value = settings.preferredModel || "";
+    savedSettings = settings;
+    preferredModel.value = preferredModel.dataset?.provider === "gemini"
+      ? settings.preferredGeminiModel ?? "Neon" : settings.preferredModel || "";
     preferredReasoning.value = settings.preferredReasoning || "";
     enforceModelPreferences.checked = settings.enforceModelPreferences !== false;
     enforceModelPreferences.disabled = false;
@@ -384,7 +417,7 @@ progress.addEventListener("pointercancel", () => {
 
 monitorButton.addEventListener("click", async () => {
   await refreshStatus();
-  if (!activeTab || !isChatUrl(activeTab.url)) { showNotice("Open a ChatGPT tab first.", true); return; }
+  if (!activeTab || !isChatUrl(activeTab.url)) { showNotice("Open a ChatGPT or Gemini tab first.", true); return; }
   const stopCurrent = currentStatus?.isCurrentTab;
   const result = await chrome.runtime.sendMessage({
     type: "setMonitoring", enabled: !stopCurrent, tabId: activeTab.id, url: activeTab.url,
@@ -416,7 +449,7 @@ for (const button of sendNowButtons) {
     sendingCyclePrompt = true;
     renderStatus(currentStatus);
     try {
-      await runAction("sendCyclePrompt", "The extension did not confirm the send. Check ChatGPT before retrying.", {
+      await runAction("sendCyclePrompt", "The extension did not confirm the send. Check the task before retrying.", {
         kind: button.dataset.sendNow, url: activeTab?.url,
       });
     } finally {
@@ -438,19 +471,22 @@ continuePrompt.addEventListener("input", () => {
 continuePrompt.addEventListener("blur", () => { if (promptTimer) void savePrompt(); });
 for (const field of [threshold, thinkingMinutes, pluginName]) {
   field.addEventListener("input", () => {
-    clearTimeout(thresholdTimer);
-    thresholdTimer = setTimeout(saveThreshold, 400);
+    editedFields.add(field);
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(savePopupSettings, 400);
   });
-  field.addEventListener("change", () => { void saveThreshold(); });
+  field.addEventListener("change", () => { if (editedFields.has(field)) void savePopupSettings(); });
 }
 async function saveControlSettings(settings = {
   enforceModelPreferences: enforceModelPreferences.checked,
-  preferredModel: preferredModel.value,
-  preferredReasoning: preferredReasoning.value,
+  ...(preferredModel.dataset?.provider === "gemini"
+    ? { preferredGeminiModel: preferredModel.value }
+    : { preferredModel: preferredModel.value, preferredReasoning: preferredReasoning.value }),
 }) {
   pendingControlWrites++;
   controlSaveQueue = controlSaveQueue.catch(() => {}).then(async () => {
-    await chrome.runtime.sendMessage({ type: "saveSettings", tabId: promptTabId, settings });
+    const result = await chrome.runtime.sendMessage({ type: "saveSettings", tabId: promptTabId, settings });
+    if (!result?.settings) throw new Error("Settings save failed");
   }).catch(() => showNotice("Could not save settings.", true)).finally(() => {
     pendingControlWrites--;
     if (savedSettings) syncSavedSettings(savedSettings);
@@ -470,7 +506,7 @@ chooseLogFolderButton.addEventListener("click", async () => {
 });
 window.addEventListener("pagehide", () => {
   if (promptTimer) void savePrompt();
-  if (thresholdTimer) void saveThreshold();
+  if (settingsTimer) void savePopupSettings();
 });
 
 void load();
